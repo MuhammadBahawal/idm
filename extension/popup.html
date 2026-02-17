@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      width: 340px;
+      background: #0F172A;
+      color: #F1F5F9;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      font-size: 13px;
+    }
+    .header {
+      background: linear-gradient(135deg, #1E293B, #0F172A);
+      padding: 16px 20px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      border-bottom: 1px solid #334155;
+    }
+    .header h1 {
+      font-size: 16px;
+      font-weight: 700;
+      background: linear-gradient(135deg, #3B82F6, #10B981);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .status {
+      padding: 12px 20px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      border-bottom: 1px solid #1E293B;
+    }
+    .dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: #EF4444;
+    }
+    .dot.connected { background: #10B981; }
+    .section {
+      padding: 12px 20px;
+    }
+    .section-title {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      color: #64748B;
+      margin-bottom: 8px;
+    }
+    .media-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      background: #1E293B;
+      border-radius: 8px;
+      margin-bottom: 6px;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    .media-item:hover { background: #334155; }
+    .media-type {
+      font-size: 10px;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+    .media-type.hls { background: #3B82F6; color: white; }
+    .media-type.dash { background: #8B5CF6; color: white; }
+    .media-title {
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 12px;
+    }
+    .empty {
+      text-align: center;
+      color: #64748B;
+      padding: 20px;
+      font-size: 12px;
+    }
+    .quick-add {
+      padding: 12px 20px;
+      border-top: 1px solid #1E293B;
+    }
+    .quick-add input {
+      width: 100%;
+      padding: 8px 12px;
+      background: #1E293B;
+      border: 1px solid #334155;
+      border-radius: 8px;
+      color: #F1F5F9;
+      font-size: 12px;
+      outline: none;
+    }
+    .quick-add input:focus { border-color: #3B82F6; }
+    .btn {
+      width: 100%;
+      padding: 8px;
+      margin-top: 8px;
+      background: linear-gradient(135deg, #3B82F6, #2563EB);
+      border: none;
+      border-radius: 8px;
+      color: white;
+      font-weight: 600;
+      cursor: pointer;
+      font-size: 13px;
+    }
+    .btn:hover { opacity: 0.9; }
+    .footer {
+      padding: 8px 20px;
+      text-align: center;
+      border-top: 1px solid #1E293B;
+    }
+    .footer a {
+      color: #64748B;
+      text-decoration: none;
+      font-size: 11px;
+    }
+    .footer a:hover { color: #94A3B8; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>⬇ MyDM</h1>
+  </div>
+
+  <div class="status">
+    <div class="dot" id="statusDot"></div>
+    <span id="statusText">Checking connection...</span>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Detected Media</div>
+    <div id="mediaList">
+      <div class="empty">No media detected on this page</div>
+    </div>
+  </div>
+
+  <div class="quick-add">
+    <input type="text" id="urlInput" placeholder="Paste URL to download...">
+    <button class="btn" id="addBtn">Download with MyDM</button>
+  </div>
+
+  <div class="footer">
+    <a href="#" id="optionsLink">Settings</a>
+  </div>
+
+  <script src="dist/popup.js"></script>
+</body>
+</html>

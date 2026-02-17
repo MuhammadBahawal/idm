@@ -1,0 +1,14 @@
+{
+    "name": "mydm-extension",
+    "version": "1.0.0",
+    "private": true,
+    "scripts": {
+        "build": "node build.js",
+        "watch": "node build.js --watch",
+        "test": "echo \"No tests configured yet\" && exit 0"
+    },
+    "devDependencies": {
+        "@types/chrome": "^0.1.36",
+        "esbuild": "^0.20.0"
+    }
+}

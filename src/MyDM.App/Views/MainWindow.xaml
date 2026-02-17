@@ -1,0 +1,156 @@
+<Window x:Class="MyDM.App.Views.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="clr-namespace:MyDM.App.ViewModels"
+        xmlns:conv="clr-namespace:MyDM.App.Converters"
+        Title="MyDM — Download Manager" Height="700" Width="1100" MinWidth="900" MinHeight="500"
+        WindowStartupLocation="CenterScreen" Background="{StaticResource BgBrush}"
+        FontFamily="Segoe UI">
+
+    <Window.Resources>
+        <conv:FileSizeConverter x:Key="FileSizeConverter"/>
+        <conv:SpeedConverter x:Key="SpeedConverter"/>
+        <conv:TimeLeftConverter x:Key="TimeLeftConverter"/>
+        <conv:StatusToStringConverter x:Key="StatusConverter"/>
+        <conv:StatusToColorConverter x:Key="StatusColorConverter"/>
+    </Window.Resources>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- ══════════ TOOLBAR ══════════ -->
+        <Border Grid.Row="0" Background="{StaticResource ToolbarGradient}" Padding="8,6">
+            <StackPanel Orientation="Horizontal">
+                <Button Content="➕ Add URL" Style="{StaticResource ToolbarButton}" Command="{Binding AddUrlCommand}" Margin="2,0"/>
+                <Border Width="1" Background="{StaticResource BgLighterBrush}" Margin="6,4"/>
+                <Button Content="▶ Resume" Style="{StaticResource ToolbarButton}" Command="{Binding ResumeSelectedCommand}" Margin="2,0"/>
+                <Button Content="⏸ Stop" Style="{StaticResource ToolbarButton}" Command="{Binding StopSelectedCommand}" Margin="2,0"/>
+                <Button Content="⏹ Stop All" Style="{StaticResource ToolbarButton}" Command="{Binding StopAllCommand}" Margin="2,0"/>
+                <Border Width="1" Background="{StaticResource BgLighterBrush}" Margin="6,4"/>
+                <Button Content="🗑 Delete" Style="{StaticResource ToolbarButton}" Command="{Binding DeleteSelectedCommand}" Margin="2,0"/>
+                <Button Content="📋 Details" Style="{StaticResource ToolbarButton}" Command="{Binding ShowDetailsCommand}" Margin="2,0"/>
+                <Border Width="1" Background="{StaticResource BgLighterBrush}" Margin="6,4"/>
+                <Button Content="▶ Start Queue" Style="{StaticResource ToolbarButton}" Command="{Binding StartQueueCommand}" Margin="2,0"/>
+                <Button Content="⏹ Stop Queue" Style="{StaticResource ToolbarButton}" Command="{Binding StopQueueCommand}" Margin="2,0"/>
+                <Border Width="1" Background="{StaticResource BgLighterBrush}" Margin="6,4"/>
+                <Button Content="⚙ Options" Style="{StaticResource ToolbarButton}" Command="{Binding OpenSettingsCommand}" Margin="2,0"/>
+            </StackPanel>
+        </Border>
+
+        <!-- ══════════ MAIN CONTENT ══════════ -->
+        <Grid Grid.Row="1">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="200" MinWidth="150" MaxWidth="300"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+
+            <!-- ── Categories Panel ── -->
+            <Border Grid.Column="0" Background="{StaticResource BgDarkBrush}" Padding="4">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+                    <TextBlock Grid.Row="0" Text="Categories" FontSize="14" FontWeight="Bold"
+                               Foreground="{StaticResource TextMutedBrush}" Margin="12,12,12,8"/>
+                    <ListBox Grid.Row="1" x:Name="CategoryList"
+                             ItemsSource="{Binding Categories}" SelectedItem="{Binding SelectedCategory}"
+                             Background="Transparent" BorderThickness="0" Foreground="{StaticResource TextBrush}"
+                             SelectionChanged="CategoryList_SelectionChanged">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <TextBlock Text="{Binding}" Padding="8,6" FontSize="13"/>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                        <ListBox.ItemContainerStyle>
+                            <Style TargetType="ListBoxItem">
+                                <Setter Property="Background" Value="Transparent"/>
+                                <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
+                                <Setter Property="Padding" Value="0"/>
+                                <Setter Property="Margin" Value="0"/>
+                                <Setter Property="Template">
+                                    <Setter.Value>
+                                        <ControlTemplate TargetType="ListBoxItem">
+                                            <Border x:Name="border" Background="{TemplateBinding Background}"
+                                                    CornerRadius="4" Margin="4,1">
+                                                <ContentPresenter/>
+                                            </Border>
+                                            <ControlTemplate.Triggers>
+                                                <Trigger Property="IsMouseOver" Value="True">
+                                                    <Setter TargetName="border" Property="Background" Value="{StaticResource BgLightBrush}"/>
+                                                </Trigger>
+                                                <Trigger Property="IsSelected" Value="True">
+                                                    <Setter TargetName="border" Property="Background" Value="#333B82F6"/>
+                                                </Trigger>
+                                            </ControlTemplate.Triggers>
+                                        </ControlTemplate>
+                                    </Setter.Value>
+                                </Setter>
+                            </Style>
+                        </ListBox.ItemContainerStyle>
+                    </ListBox>
+                </Grid>
+            </Border>
+
+            <!-- Splitter -->
+            <GridSplitter Grid.Column="1" Width="3" Background="{StaticResource BorderBrush}"
+                          HorizontalAlignment="Center" VerticalAlignment="Stretch"/>
+
+            <!-- ── Downloads List ── -->
+            <Border Grid.Column="2" Padding="0">
+                <ListView ItemsSource="{Binding Downloads}" SelectedItem="{Binding SelectedDownload}"
+                          MouseDoubleClick="DownloadList_DoubleClick">
+                    <ListView.View>
+                        <GridView>
+                            <GridViewColumn Header="File Name" Width="250"
+                                            DisplayMemberBinding="{Binding FileName}"/>
+                            <GridViewColumn Header="Size" Width="90"
+                                            DisplayMemberBinding="{Binding SizeText}"/>
+                            <GridViewColumn Header="Status" Width="150"
+                                            DisplayMemberBinding="{Binding StatusText}"/>
+                            <GridViewColumn Header="Progress" Width="100">
+                                <GridViewColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <Grid Width="90">
+                                            <ProgressBar Value="{Binding Progress}" Maximum="100" Height="6"/>
+                                            <TextBlock Text="{Binding Progress, StringFormat={}{0:F1}%}"
+                                                       FontSize="10" Foreground="{StaticResource TextMutedBrush}"
+                                                       HorizontalAlignment="Center" Margin="0,8,0,0"/>
+                                        </Grid>
+                                    </DataTemplate>
+                                </GridViewColumn.CellTemplate>
+                            </GridViewColumn>
+                            <GridViewColumn Header="Speed" Width="100"
+                                            DisplayMemberBinding="{Binding SpeedText}"/>
+                            <GridViewColumn Header="Time Left" Width="90"
+                                            DisplayMemberBinding="{Binding TimeLeftText}"/>
+                            <GridViewColumn Header="Last Try" Width="130"
+                                            DisplayMemberBinding="{Binding LastTryText}"/>
+                        </GridView>
+                    </ListView.View>
+                </ListView>
+            </Border>
+        </Grid>
+
+        <!-- ══════════ STATUS BAR ══════════ -->
+        <Border Grid.Row="2" Background="{StaticResource BgDarkBrush}" Padding="12,6">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0" Text="{Binding StatusBarText}" Foreground="{StaticResource TextMutedBrush}" FontSize="12"/>
+                <TextBlock Grid.Column="1" Text="{Binding ActiveDownloadsText}" Foreground="{StaticResource PrimaryBrush}"
+                           FontSize="12" FontWeight="SemiBold" Margin="20,0"/>
+                <TextBlock Grid.Column="2" Text="{Binding TotalSpeedText}" Foreground="{StaticResource AccentBrush}"
+                           FontSize="12" FontWeight="SemiBold"/>
+            </Grid>
+        </Border>
+    </Grid>
+</Window>

@@ -1,0 +1,13 @@
+d:\idm\src\MyDM.Core\bin\Debug\net8.0\MyDM.Core.deps.json
+d:\idm\src\MyDM.Core\bin\Debug\net8.0\MyDM.Core.dll
+d:\idm\src\MyDM.Core\bin\Debug\net8.0\MyDM.Core.pdb
+d:\idm\src\MyDM.Core\obj\Debug\net8.0\MyDM.Core.csproj.AssemblyReference.cache
+d:\idm\src\MyDM.Core\obj\Debug\net8.0\MyDM.Core.GeneratedMSBuildEditorConfig.editorconfig
+d:\idm\src\MyDM.Core\obj\Debug\net8.0\MyDM.Core.AssemblyInfoInputs.cache
+d:\idm\src\MyDM.Core\obj\Debug\net8.0\MyDM.Core.AssemblyInfo.cs
+d:\idm\src\MyDM.Core\obj\Debug\net8.0\MyDM.Core.csproj.CoreCompileInputs.cache
+d:\idm\src\MyDM.Core\obj\Debug\net8.0\MyDM.Core.sourcelink.json
+d:\idm\src\MyDM.Core\obj\Debug\net8.0\MyDM.Core.dll
+d:\idm\src\MyDM.Core\obj\Debug\net8.0\refint\MyDM.Core.dll
+d:\idm\src\MyDM.Core\obj\Debug\net8.0\MyDM.Core.pdb
+d:\idm\src\MyDM.Core\obj\Debug\net8.0\ref\MyDM.Core.dll

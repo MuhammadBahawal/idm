@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>MyDM Settings</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: #0F172A;
+            color: #F1F5F9;
+            font-family: 'Segoe UI', system-ui, sans-serif;
+            padding: 32px;
+            max-width: 600px;
+            margin: 0 auto;
+        }
+
+        h1 {
+            font-size: 24px;
+            margin-bottom: 24px;
+            background: linear-gradient(135deg, #3B82F6, #10B981);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .card {
+            background: #1E293B;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 16px;
+        }
+
+        .card h2 {
+            font-size: 16px;
+            margin-bottom: 12px;
+            color: #94A3B8;
+        }
+
+        .status-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 8px;
+        }
+
+        .dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+        }
+
+        .dot.ok {
+            background: #10B981;
+        }
+
+        .dot.err {
+            background: #EF4444;
+        }
+
+        .log-box {
+            background: #0F172A;
+            border: 1px solid #334155;
+            border-radius: 8px;
+            padding: 12px;
+            font-family: 'Consolas', monospace;
+            font-size: 12px;
+            max-height: 300px;
+            overflow-y: auto;
+            color: #94A3B8;
+        }
+
+        button {
+            background: #3B82F6;
+            color: white;
+            border: none;
+            padding: 8px 20px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: 600;
+            margin-top: 8px;
+        }
+
+        button:hover {
+            opacity: 0.9;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>⚙ MyDM Settings</h1>
+
+    <div class="card">
+        <h2>Connection Status</h2>
+        <div class="status-row">
+            <div class="dot" id="statusDot"></div>
+            <span id="statusText">Checking...</span>
+        </div>
+        <button id="testBtn">Test Connection</button>
+    </div>
+
+    <div class="card">
+        <h2>Debug Logs</h2>
+        <div class="log-box" id="logBox">No logs yet.</div>
+        <button id="clearLogsBtn">Clear Logs</button>
+    </div>
+
+    <div class="card">
+        <h2>Detected Media Cache</h2>
+        <p id="mediaCount" style="color: #94A3B8; margin-bottom: 8px;">0 items in cache</p>
+        <button id="clearMediaBtn">Clear Cache</button>
+    </div>
+
+    <script>
+        const statusDot = document.getElementById('statusDot');
+        const statusText = document.getElementById('statusText');
+        const testBtn = document.getElementById('testBtn');
+        const logBox = document.getElementById('logBox');
+        const clearLogsBtn = document.getElementById('clearLogsBtn');
+        const clearMediaBtn = document.getElementById('clearMediaBtn');
+        const mediaCount = document.getElementById('mediaCount');
+
+        // Check connection
+        function checkConnection() {
+            chrome.runtime.sendMessage({ type: 'get_connection_status' }, (r) => {
+                if (r?.connected) {
+                    statusDot.classList.add('ok');
+                    statusDot.classList.remove('err');
+                    statusText.textContent = 'Connected to MyDM Desktop App';
+                } else {
+                    statusDot.classList.add('err');
+                    statusDot.classList.remove('ok');
+                    statusText.textContent = 'Not connected — Make sure MyDM is running';
+                }
+            });
+        }
+
+        checkConnection();
+        testBtn.addEventListener('click', checkConnection);
+
+        // Media cache
+        chrome.storage.local.get(['detectedMedia'], (r) => {
+            const count = (r.detectedMedia || []).length;
+            mediaCount.textContent = `${count} items in cache`;
+        });
+
+        clearMediaBtn.addEventListener('click', () => {
+            chrome.storage.local.set({ detectedMedia: [] });
+            mediaCount.textContent = '0 items in cache';
+        });
+
+        clearLogsBtn.addEventListener('click', () => {
+            logBox.textContent = 'Logs cleared.';
+        });
+    </script>
+</body>
+
+</html>

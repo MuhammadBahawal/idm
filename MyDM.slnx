@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/MyDM.App/MyDM.App.csproj" />
+    <Project Path="src/MyDM.Core/MyDM.Core.csproj" />
+    <Project Path="src/MyDM.NativeHost/MyDM.NativeHost.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/MyDM.Core.Tests/MyDM.Core.Tests.csproj" />
+  </Folder>
+</Solution>

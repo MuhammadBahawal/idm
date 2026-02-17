@@ -1,0 +1,67 @@
+<Window x:Class="MyDM.App.Views.DownloadDetailsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Download Details" Height="500" Width="650"
+        WindowStartupLocation="CenterOwner"
+        Background="{StaticResource BgBrush}" FontFamily="Segoe UI">
+
+    <TabControl Background="Transparent" BorderThickness="0" Margin="12">
+        <!-- Info Tab -->
+        <TabItem Header="Info" Foreground="{StaticResource TextBrush}">
+            <ScrollViewer VerticalScrollBarVisibility="Auto" Margin="12">
+                <StackPanel>
+                    <Label Content="URL:"/>
+                    <TextBox x:Name="UrlText" IsReadOnly="True" Margin="0,0,0,8"/>
+
+                    <Label Content="File Name:"/>
+                    <TextBox x:Name="FileNameText" IsReadOnly="True" Margin="0,0,0,8"/>
+
+                    <Label Content="Save Path:"/>
+                    <TextBox x:Name="SavePathText" IsReadOnly="True" Margin="0,0,0,8"/>
+
+                    <Grid Margin="0,8,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition/>
+                            <RowDefinition/>
+                            <RowDefinition/>
+                            <RowDefinition/>
+                        </Grid.RowDefinitions>
+
+                        <TextBlock Grid.Row="0" Grid.Column="0" x:Name="SizeText" Foreground="{StaticResource TextBrush}"/>
+                        <TextBlock Grid.Row="0" Grid.Column="1" x:Name="StatusText" Foreground="{StaticResource TextBrush}"/>
+                        <TextBlock Grid.Row="1" Grid.Column="0" x:Name="CategoryText" Foreground="{StaticResource TextBrush}" Margin="0,4,0,0"/>
+                        <TextBlock Grid.Row="1" Grid.Column="1" x:Name="ConnectionsText" Foreground="{StaticResource TextBrush}" Margin="0,4,0,0"/>
+                        <TextBlock Grid.Row="2" Grid.Column="0" x:Name="RetriesText" Foreground="{StaticResource TextBrush}" Margin="0,4,0,0"/>
+                        <TextBlock Grid.Row="2" Grid.Column="1" x:Name="CreatedText" Foreground="{StaticResource TextBrush}" Margin="0,4,0,0"/>
+                        <TextBlock Grid.Row="3" Grid.Column="0" x:Name="ErrorText" Foreground="{StaticResource DangerBrush}" Margin="0,4,0,0" TextWrapping="Wrap"/>
+                    </Grid>
+                </StackPanel>
+            </ScrollViewer>
+        </TabItem>
+
+        <!-- Segments Tab -->
+        <TabItem Header="Segments" Foreground="{StaticResource TextBrush}">
+            <ListView x:Name="SegmentsList" Margin="12">
+                <ListView.View>
+                    <GridView>
+                        <GridViewColumn Header="#" Width="40" DisplayMemberBinding="{Binding Index}"/>
+                        <GridViewColumn Header="Range" Width="180" DisplayMemberBinding="{Binding RangeText}"/>
+                        <GridViewColumn Header="Downloaded" Width="100" DisplayMemberBinding="{Binding DownloadedText}"/>
+                        <GridViewColumn Header="Status" Width="80" DisplayMemberBinding="{Binding StatusText}"/>
+                        <GridViewColumn Header="Progress" Width="80" DisplayMemberBinding="{Binding ProgressText}"/>
+                    </GridView>
+                </ListView.View>
+            </ListView>
+        </TabItem>
+
+        <!-- Logs Tab -->
+        <TabItem Header="Logs" Foreground="{StaticResource TextBrush}">
+            <ListBox x:Name="LogsList" Margin="12" Background="Transparent" BorderThickness="0"
+                     Foreground="{StaticResource TextMutedBrush}" FontFamily="Consolas" FontSize="11"/>
+        </TabItem>
+    </TabControl>
+</Window>
