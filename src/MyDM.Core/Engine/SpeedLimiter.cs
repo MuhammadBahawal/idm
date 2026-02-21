@@ -49,7 +49,8 @@ public class SpeedLimiter
             if (allowed <= 0)
             {
                 // Wait for tokens to refill
-                var waitMs = Math.Max(50, 1000 / (effectiveLimit / Math.Max(requested, 1)));
+                var divisor = Math.Max(effectiveLimit / Math.Max(requested, 1), 1);
+                var waitMs = Math.Max(50, 1000 / divisor);
                 await Task.Delay(Math.Min((int)waitMs, 200), ct);
                 RefillTokens();
                 allowed = (int)Math.Min(requested, Math.Min(_tokensAvailable, effectiveLimit / 10));

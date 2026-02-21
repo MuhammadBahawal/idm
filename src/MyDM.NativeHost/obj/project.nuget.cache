@@ -1,8 +1,8 @@
 {
   "version": 2,
-  "dgSpecHash": "1kZ/1zxolW8=",
+  "dgSpecHash": "dqMOzCs9B2U=",
   "success": true,
-  "projectFilePath": "d:\\idm\\src\\MyDM.NativeHost\\MyDM.NativeHost.csproj",
+  "projectFilePath": "D:\\idm\\src\\MyDM.NativeHost\\MyDM.NativeHost.csproj",
   "expectedPackageFiles": [
     "C:\\Users\\MuhammadBahawal\\.nuget\\packages\\microsoft.data.sqlite\\8.0.11\\microsoft.data.sqlite.8.0.11.nupkg.sha512",
     "C:\\Users\\MuhammadBahawal\\.nuget\\packages\\microsoft.data.sqlite.core\\8.0.11\\microsoft.data.sqlite.core.8.0.11.nupkg.sha512",

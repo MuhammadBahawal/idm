@@ -5870,8 +5870,8 @@
         "net8.0": {
           "targetAlias": "net8.0",
           "projectReferences": {
-            "d:\\idm\\src\\MyDM.Core\\MyDM.Core.csproj": {
-              "projectPath": "d:\\idm\\src\\MyDM.Core\\MyDM.Core.csproj"
+            "D:\\idm\\src\\MyDM.Core\\MyDM.Core.csproj": {
+              "projectPath": "D:\\idm\\src\\MyDM.Core\\MyDM.Core.csproj"
             }
           }
         }

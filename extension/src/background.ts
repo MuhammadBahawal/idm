@@ -22,9 +22,8 @@ function connectNativeHost(): chrome.runtime.Port | null {
     try {
         nativePort = chrome.runtime.connectNative(NATIVE_HOST_NAME);
 
-        nativePort.onMessage.addListener((msg: any) => {
+        nativePort.onMessage.addListener((msg: Record<string, unknown>) => {
             console.log('[MyDM] Native message received:', msg);
-            // Store latest response for popup
             chrome.storage.local.set({ lastNativeResponse: msg });
         });
 
@@ -44,7 +43,7 @@ function connectNativeHost(): chrome.runtime.Port | null {
     }
 }
 
-function sendToNative(message: any): void {
+function sendToNative(message: Record<string, unknown>): void {
     if (!nativePort) {
         nativePort = connectNativeHost();
     }
@@ -75,92 +74,110 @@ chrome.runtime.onInstalled.addListener(() => {
     sendToNative({ type: 'ping', payload: {} });
 });
 
-chrome.contextMenus.onClicked.addListener((info, tab) => {
-    const url = info.linkUrl || info.srcUrl || info.pageUrl;
-    if (!url) return;
+chrome.contextMenus.onClicked.addListener(
+    (info: chrome.contextMenus.OnClickData, tab?: chrome.tabs.Tab) => {
+        const url = info.linkUrl || info.srcUrl || info.pageUrl;
+        if (!url) return;
 
-    sendToNative({
-        type: 'add_download',
-        payload: {
-            url: url,
-            referrer: tab?.url || '',
-        },
-    });
-});
-
-// ──── Listen for messages from content script ────
-
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    if (message.type === 'download_with_mydm') {
         sendToNative({
             type: 'add_download',
             payload: {
-                url: message.url,
-                filename: message.filename,
-                referrer: sender.tab?.url || '',
+                url: url,
+                referrer: tab?.url || '',
             },
         });
-        sendResponse({ success: true });
     }
+);
 
-    if (message.type === 'download_media') {
-        sendToNative({
-            type: 'add_media_download',
-            payload: {
-                manifestUrl: message.manifestUrl,
-                mediaType: message.mediaType,
-                quality: message.quality,
-                title: message.title,
-                referrer: sender.tab?.url || '',
-            },
-        });
-        sendResponse({ success: true });
-    }
+// ──── Listen for messages from content script ────
 
-    if (message.type === 'get_connection_status') {
-        sendResponse({ connected: nativePort !== null });
-    }
+interface ExtMessage {
+    type: string;
+    url?: string;
+    filename?: string;
+    manifestUrl?: string;
+    mediaType?: string;
+    quality?: string;
+    title?: string;
+}
 
-    if (message.type === 'detected_media') {
-        // Forward media detection to storage for popup
-        chrome.storage.local.get(['detectedMedia'], (result) => {
-            const media = result.detectedMedia || [];
-            media.push({
-                url: message.url,
-                type: message.mediaType,
-                tabId: sender.tab?.id,
-                title: sender.tab?.title,
-                timestamp: Date.now(),
+chrome.runtime.onMessage.addListener(
+    (
+        message: ExtMessage,
+        sender: chrome.runtime.MessageSender,
+        sendResponse: (response: Record<string, unknown>) => void
+    ) => {
+        if (message.type === 'download_with_mydm') {
+            sendToNative({
+                type: 'add_download',
+                payload: {
+                    url: message.url,
+                    filename: message.filename,
+                    referrer: sender.tab?.url || '',
+                },
             });
-            // Keep last 50
-            chrome.storage.local.set({ detectedMedia: media.slice(-50) });
-        });
-        sendResponse({ success: true });
-    }
+            sendResponse({ success: true });
+        }
 
-    return true; // async response
-});
+        if (message.type === 'download_media') {
+            sendToNative({
+                type: 'add_media_download',
+                payload: {
+                    manifestUrl: message.manifestUrl,
+                    mediaType: message.mediaType,
+                    quality: message.quality,
+                    title: message.title,
+                    referrer: sender.tab?.url || '',
+                },
+            });
+            sendResponse({ success: true });
+        }
 
-// ──── Monitor web requests for media manifests ────
+        if (message.type === 'get_connection_status') {
+            sendResponse({ connected: nativePort !== null });
+        }
 
-chrome.webRequest?.onCompleted.addListener(
-    (details) => {
-        const url = details.url.toLowerCase();
-        if (url.includes('.m3u8') || url.includes('.mpd')) {
-            chrome.storage.local.get(['detectedMedia'], (result) => {
-                const media = result.detectedMedia || [];
-                const mediaType = url.includes('.m3u8') ? 'hls' : 'dash';
+        if (message.type === 'detected_media') {
+            chrome.storage.local.get(['detectedMedia'], (result: Record<string, unknown>) => {
+                const media = (result['detectedMedia'] as Array<Record<string, unknown>>) || [];
                 media.push({
-                    url: details.url,
-                    type: mediaType,
-                    tabId: details.tabId,
+                    url: message.url,
+                    type: message.mediaType,
+                    tabId: sender.tab?.id,
+                    title: sender.tab?.title,
                     timestamp: Date.now(),
                 });
                 chrome.storage.local.set({ detectedMedia: media.slice(-50) });
             });
+            sendResponse({ success: true });
         }
-    },
-    { urls: ['<all_urls>'], types: ['xmlhttprequest', 'media', 'other'] }
+
+        return true; // async response
+    }
 );
+
+// ──── Monitor web requests for media manifests ────
+
+if (chrome.webRequest) {
+    chrome.webRequest.onCompleted.addListener(
+        (details) => {
+            const url = details.url.toLowerCase();
+            if (url.includes('.m3u8') || url.includes('.mpd')) {
+                chrome.storage.local.get(['detectedMedia'], (result: Record<string, unknown>) => {
+                    const media = (result['detectedMedia'] as Array<Record<string, unknown>>) || [];
+                    const mediaType = url.includes('.m3u8') ? 'hls' : 'dash';
+                    media.push({
+                        url: details.url,
+                        type: mediaType,
+                        tabId: details.tabId,
+                        timestamp: Date.now(),
+                    });
+                    chrome.storage.local.set({ detectedMedia: media.slice(-50) });
+                });
+            }
+        },
+        { urls: ['<all_urls>'], types: ['xmlhttprequest', 'media', 'other'] }
+    );
+}
 
 export { };

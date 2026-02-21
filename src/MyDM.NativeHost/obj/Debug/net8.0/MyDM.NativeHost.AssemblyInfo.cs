@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("MyDM.NativeHost")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+b39b92de371d13240e76cef4837b6c7b7150e0f5")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+79d9ad9ac94d0d17d87b312ccba4823c3744ac92")]
 [assembly: System.Reflection.AssemblyProductAttribute("MyDM.NativeHost")]
 [assembly: System.Reflection.AssemblyTitleAttribute("MyDM.NativeHost")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

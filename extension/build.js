@@ -7,6 +7,7 @@ const buildOptions = {
     entryPoints: [
         'src/background.ts',
         'src/content.ts',
+        'src/popup.ts',
     ],
     outdir: 'dist',
     bundle: true,

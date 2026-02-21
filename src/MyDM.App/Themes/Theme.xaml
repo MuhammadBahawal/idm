@@ -133,7 +133,6 @@
         </Setter>
     </Style>
 
-    <!-- ──── ComboBox Style ──── -->
     <Style TargetType="ComboBox">
         <Setter Property="Background" Value="{StaticResource BgLightBrush}"/>
         <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
@@ -141,6 +140,18 @@
         <Setter Property="BorderThickness" Value="1"/>
         <Setter Property="Padding" Value="10,8"/>
         <Setter Property="FontSize" Value="13"/>
+    </Style>
+
+    <Style TargetType="ComboBoxItem">
+        <Setter Property="Background" Value="{StaticResource BgBrush}"/>
+        <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
+        <Setter Property="Padding" Value="8,6"/>
+        <Style.Triggers>
+            <Trigger Property="IsHighlighted" Value="True">
+                <Setter Property="Background" Value="{StaticResource PrimaryBrush}"/>
+                <Setter Property="Foreground" Value="White"/>
+            </Trigger>
+        </Style.Triggers>
     </Style>
 
     <!-- ──── ProgressBar Style ──── -->
@@ -153,9 +164,9 @@
                 <ControlTemplate TargetType="ProgressBar">
                     <Grid>
                         <Border Background="{TemplateBinding Background}" CornerRadius="3"/>
+                        <Border x:Name="PART_Track"/>
                         <Border x:Name="PART_Indicator" HorizontalAlignment="Left" CornerRadius="3"
                                 Background="{StaticResource ProgressGradient}"/>
-                        <Border x:Name="PART_Track"/>
                     </Grid>
                 </ControlTemplate>
             </Setter.Value>
@@ -236,9 +247,42 @@
     </Style>
 
     <!-- ──── ScrollBar Style ──── -->
-    <Style TargetType="ScrollBar">
+    <!-- Minimal scrollbar — only thin width, let WPF handle track/thumb -->
+
+    <!-- ──── TabControl / TabItem Style ──── -->
+    <Style TargetType="TabControl">
         <Setter Property="Background" Value="Transparent"/>
-        <Setter Property="Width" Value="8"/>
+        <Setter Property="BorderThickness" Value="0"/>
+        <Setter Property="Padding" Value="0"/>
+    </Style>
+
+    <Style TargetType="TabItem">
+        <Setter Property="Background" Value="{StaticResource BgDarkBrush}"/>
+        <Setter Property="Foreground" Value="{StaticResource TextMutedBrush}"/>
+        <Setter Property="Padding" Value="16,8"/>
+        <Setter Property="FontSize" Value="13"/>
+        <Setter Property="BorderThickness" Value="0"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="TabItem">
+                    <Border x:Name="Border" Background="{TemplateBinding Background}"
+                            Padding="{TemplateBinding Padding}" CornerRadius="6,6,0,0"
+                            Margin="0,0,2,0">
+                        <ContentPresenter ContentSource="Header" HorizontalAlignment="Center"
+                                          TextBlock.Foreground="{TemplateBinding Foreground}"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsSelected" Value="True">
+                            <Setter TargetName="Border" Property="Background" Value="{StaticResource BgBrush}"/>
+                            <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
+                        </Trigger>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Border" Property="Background" Value="{StaticResource BgLightBrush}"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
     </Style>
 
     <!-- ──── Label Style ──── -->

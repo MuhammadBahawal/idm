@@ -56,9 +56,9 @@ public class SegmentDownloader
         {
             ct.ThrowIfCancellationRequested();
 
-            // Apply speed limiting
-            var allowed = await _speedLimiter.RequestBytesAsync(bytesRead, perDownloadSpeedLimit, ct);
-            await fileStream.WriteAsync(buffer.AsMemory(0, Math.Min(bytesRead, allowed)), ct);
+            // Apply speed limiting (delay only, never truncate data)
+            await _speedLimiter.RequestBytesAsync(bytesRead, perDownloadSpeedLimit, ct);
+            await fileStream.WriteAsync(buffer.AsMemory(0, bytesRead), ct);
 
             segment.DownloadedBytes += bytesRead;
             onProgress?.Invoke(segment, bytesRead);
@@ -97,8 +97,9 @@ public class SegmentDownloader
         {
             ct.ThrowIfCancellationRequested();
 
-            var allowed = await _speedLimiter.RequestBytesAsync(bytesRead, perDownloadSpeedLimit, ct);
-            await fileStream.WriteAsync(buffer.AsMemory(0, Math.Min(bytesRead, allowed)), ct);
+            // Apply speed limiting (delay only, never truncate data)
+            await _speedLimiter.RequestBytesAsync(bytesRead, perDownloadSpeedLimit, ct);
+            await fileStream.WriteAsync(buffer.AsMemory(0, bytesRead), ct);
 
             totalRead += bytesRead;
             onProgress?.Invoke(totalRead, totalSize);

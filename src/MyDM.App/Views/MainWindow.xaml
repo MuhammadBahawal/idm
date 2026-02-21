@@ -117,7 +117,7 @@
                                 <GridViewColumn.CellTemplate>
                                     <DataTemplate>
                                         <Grid Width="90">
-                                            <ProgressBar Value="{Binding Progress}" Maximum="100" Height="6"/>
+                                            <ProgressBar Value="{Binding Progress, Mode=OneWay}" Maximum="100" Height="6"/>
                                             <TextBlock Text="{Binding Progress, StringFormat={}{0:F1}%}"
                                                        FontSize="10" Foreground="{StaticResource TextMutedBrush}"
                                                        HorizontalAlignment="Center" Margin="0,8,0,0"/>

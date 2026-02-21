@@ -3,14 +3,6 @@
 // Detects downloadable links, video elements, and HLS/DASH streams
 // ═══════════════════════════════════════════════════════════
 
-const DOWNLOAD_EXTENSIONS = [
-    'zip', 'rar', '7z', 'tar', 'gz', 'exe', 'msi', 'dmg', 'deb', 'rpm',
-    'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx',
-    'mp4', 'mkv', 'avi', 'mov', 'wmv', 'flv', 'webm',
-    'mp3', 'flac', 'wav', 'aac', 'ogg', 'wma', 'm4a',
-    'iso', 'img', 'bin',
-];
-
 // ──── HLS/DASH Parser (lightweight, client-side) ────
 
 interface MediaQuality {
@@ -32,7 +24,6 @@ function parseHlsMaster(content: string, baseUrl: string): MediaQuality[] {
         const resolution = extractAttr(line, 'RESOLUTION');
         const codecs = extractAttr(line, 'CODECS');
 
-        // Next non-comment line is the URL
         for (let j = i + 1; j < lines.length; j++) {
             const nextLine = lines[j].trim();
             if (!nextLine || nextLine.startsWith('#')) continue;
@@ -74,31 +65,26 @@ function injectVideoOverlay(video: HTMLVideoElement): void {
     const container = video.parentElement;
     if (!container) return;
 
-    // Ensure container is positioned
     const computedPos = getComputedStyle(container).position;
     if (computedPos === 'static') {
         container.style.position = 'relative';
     }
 
-    // Create overlay button
     const btn = document.createElement('button');
     btn.className = 'mydm-overlay-btn';
     btn.textContent = '⬇ MyDM';
     btn.title = 'Download with MyDM';
 
-    btn.addEventListener('click', async (e) => {
+    btn.addEventListener('click', (e: MouseEvent) => {
         e.stopPropagation();
         e.preventDefault();
 
-        // Try to detect the media source
         const src = video.src || video.currentSrc;
         const sources = video.querySelectorAll('source');
 
         if (src && (src.includes('.m3u8') || src.includes('.mpd'))) {
-            // It's a streaming source — show quality selection
             showQualityModal(src, src.includes('.m3u8') ? 'hls' : 'dash');
         } else if (src) {
-            // Direct video URL
             chrome.runtime.sendMessage({
                 type: 'download_with_mydm',
                 url: src,
@@ -106,7 +92,6 @@ function injectVideoOverlay(video: HTMLVideoElement): void {
             });
             showNotification('Sent to MyDM');
         } else if (sources.length > 0) {
-            // Multiple sources — use the first one
             const firstSrc = (sources[0] as HTMLSourceElement).src;
             chrome.runtime.sendMessage({
                 type: 'download_with_mydm',
@@ -125,7 +110,6 @@ function injectVideoOverlay(video: HTMLVideoElement): void {
 // ──── Quality Selection Modal ────
 
 async function showQualityModal(manifestUrl: string, mediaType: 'hls' | 'dash'): Promise<void> {
-    // Remove existing modal
     document.querySelector('.mydm-quality-modal')?.remove();
 
     let qualities: MediaQuality[] = [];
@@ -137,10 +121,8 @@ async function showQualityModal(manifestUrl: string, mediaType: 'hls' | 'dash'):
         if (mediaType === 'hls') {
             qualities = parseHlsMaster(content, manifestUrl);
         }
-        // DASH parsing would need XML — simplified here
     } catch (e) {
         console.error('[MyDM] Failed to fetch manifest:', e);
-        // Fallback: just download the manifest URL
         chrome.runtime.sendMessage({
             type: 'download_media',
             manifestUrl: manifestUrl,
@@ -152,7 +134,6 @@ async function showQualityModal(manifestUrl: string, mediaType: 'hls' | 'dash'):
     }
 
     if (qualities.length === 0) {
-        // No qualities found — send as-is
         chrome.runtime.sendMessage({
             type: 'download_media',
             manifestUrl: manifestUrl,
@@ -163,7 +144,6 @@ async function showQualityModal(manifestUrl: string, mediaType: 'hls' | 'dash'):
         return;
     }
 
-    // Create modal
     const modal = document.createElement('div');
     modal.className = 'mydm-quality-modal';
 
@@ -172,7 +152,10 @@ async function showQualityModal(manifestUrl: string, mediaType: 'hls' | 'dash'):
     header.innerHTML = '<span>⬇ MyDM — Select Quality</span><button class="mydm-modal-close">✕</button>';
     modal.appendChild(header);
 
-    header.querySelector('.mydm-modal-close')!.addEventListener('click', () => modal.remove());
+    const closeBtn = header.querySelector('.mydm-modal-close');
+    if (closeBtn) {
+        closeBtn.addEventListener('click', () => modal.remove());
+    }
 
     const list = document.createElement('div');
     list.className = 'mydm-quality-list';
@@ -194,6 +177,7 @@ async function showQualityModal(manifestUrl: string, mediaType: 'hls' | 'dash'):
                 title: document.title,
             });
             modal.remove();
+            backdrop.remove();
             showNotification(`Downloading ${q.resolution} with MyDM`);
         });
         list.appendChild(item);
@@ -201,7 +185,6 @@ async function showQualityModal(manifestUrl: string, mediaType: 'hls' | 'dash'):
 
     modal.appendChild(list);
 
-    // Backdrop
     const backdrop = document.createElement('div');
     backdrop.className = 'mydm-modal-backdrop';
     backdrop.addEventListener('click', () => { modal.remove(); backdrop.remove(); });
@@ -226,7 +209,14 @@ function showNotification(text: string): void {
 // ──── Intercept network requests for HLS/DASH ────
 
 const originalXhrOpen = XMLHttpRequest.prototype.open;
-XMLHttpRequest.prototype.open = function (method: string, url: string | URL, ...args: any[]) {
+XMLHttpRequest.prototype.open = function (
+    this: XMLHttpRequest,
+    method: string,
+    url: string | URL,
+    async?: boolean,
+    username?: string | null,
+    password?: string | null
+): void {
     const urlStr = url.toString();
     if (urlStr.includes('.m3u8') || urlStr.includes('.mpd')) {
         chrome.runtime.sendMessage({
@@ -235,12 +225,15 @@ XMLHttpRequest.prototype.open = function (method: string, url: string | URL, ...
             mediaType: urlStr.includes('.m3u8') ? 'hls' : 'dash',
         });
     }
-    return originalXhrOpen.apply(this, [method, url, ...args] as any);
+    originalXhrOpen.call(this, method, url, async ?? true, username, password);
 };
 
 const originalFetch = window.fetch;
-window.fetch = function (...args: any[]) {
-    const url = args[0]?.toString() || '';
+window.fetch = function (
+    input: RequestInfo | URL,
+    init?: RequestInit
+): Promise<Response> {
+    const url = input.toString();
     if (url.includes('.m3u8') || url.includes('.mpd')) {
         chrome.runtime.sendMessage({
             type: 'detected_media',
@@ -248,31 +241,29 @@ window.fetch = function (...args: any[]) {
             mediaType: url.includes('.m3u8') ? 'hls' : 'dash',
         });
     }
-    return originalFetch.apply(this, args as any);
+    return originalFetch.call(this, input, init);
 };
 
 // ──── Scan for video elements ────
 
 function scanForVideos(): void {
     const videos = document.querySelectorAll('video');
-    videos.forEach((video) => injectVideoOverlay(video as HTMLVideoElement));
+    videos.forEach((video: HTMLVideoElement) => injectVideoOverlay(video));
 }
 
-// Initial scan
 scanForVideos();
 
-// Observe DOM for dynamically added videos
-const observer = new MutationObserver((mutations) => {
+const observer = new MutationObserver((mutations: MutationRecord[]) => {
     for (const mutation of mutations) {
-        for (const node of mutation.addedNodes) {
+        mutation.addedNodes.forEach((node: Node) => {
             if (node instanceof HTMLVideoElement) {
                 injectVideoOverlay(node);
             }
             if (node instanceof HTMLElement) {
                 const videos = node.querySelectorAll('video');
-                videos.forEach((v) => injectVideoOverlay(v as HTMLVideoElement));
+                videos.forEach((v: HTMLVideoElement) => injectVideoOverlay(v));
             }
-        }
+        });
     }
 });
 

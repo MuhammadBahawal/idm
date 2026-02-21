@@ -85,7 +85,7 @@ public partial class SettingsWindow : Window
                 "path": "{{hostPath.Replace("\\", "\\\\")}}",
                 "type": "stdio",
                 "allowed_origins": [
-                    "chrome-extension://YOUR_EXTENSION_ID/"
+                    "chrome-extension://*/"
                 ]
             }
             """;
@@ -111,5 +111,21 @@ public partial class SettingsWindow : Window
         {
             NativeHostStatus.Content = $"❌ Failed: {ex.Message}";
         }
+    }
+
+    private void Save_Click(object sender, RoutedEventArgs e)
+    {
+        _repository.SetSetting("DefaultSavePath", DefaultPathTextBox.Text);
+        _repository.SetSetting("GlobalSpeedLimit", SpeedLimitTextBox.Text);
+        _repository.SetSetting("FfmpegPath", FfmpegPathTextBox.Text);
+        _repository.SetSetting("ConnectionTimeout", TimeoutTextBox.Text);
+        _repository.SetSetting("MaxRetries", MaxRetriesTextBox.Text);
+
+        MessageBox.Show("Settings saved.", "MyDM", MessageBoxButton.OK, MessageBoxImage.Information);
+    }
+
+    private void Close_Click(object sender, RoutedEventArgs e)
+    {
+        Close();
     }
 }
