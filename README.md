@@ -83,6 +83,8 @@ powershell -ExecutionPolicy Bypass -File tests\NativeHost.Smoke.ps1
 - DRM-protected streams are not supported.
 - Extension automation across real sites still requires manual browser validation.
 - Native messaging setup depends on matching browser extension ID.
+- Full desktop-side HLS/DASH segment download+mux pipeline is not enabled in this build.
+  `add_media_download` now returns a clear `MEDIA_PIPELINE_NOT_IMPLEMENTED` error for raw manifest URLs.
 
 ## Project Layout
 ```text

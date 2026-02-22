@@ -150,6 +150,15 @@ public class DownloadEngine : IDisposable
                         _repository.Update(item);
                         await DownloadSingleStreamAsync(item, cts.Token);
                     }
+                    catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.RequestedRangeNotSatisfiable)
+                    {
+                        Log(item.Id, "Warning", "Range request became invalid during segmented download. Falling back to single-stream mode.");
+                        item.SupportsRange = false;
+                        item.Segments.Clear();
+                        _repository.DeleteSegments(item.Id);
+                        _repository.Update(item);
+                        await DownloadSingleStreamAsync(item, cts.Token);
+                    }
                 }
                 else
                 {

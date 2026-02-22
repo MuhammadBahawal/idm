@@ -285,6 +285,20 @@ internal static class Program
             }, requestId);
         }
 
+        var manifestPath = manifestUrl.ToLowerInvariant();
+        if (manifestPath.Contains(".m3u8") || manifestPath.Contains(".mpd"))
+        {
+            return AddRequestId(new NativeMessage
+            {
+                Type = "error",
+                Payload = new Dictionary<string, object>
+                {
+                    { "message", "HLS/DASH manifest download pipeline is not enabled in desktop engine yet. Use a direct media URL when available." },
+                    { "code", "MEDIA_PIPELINE_NOT_IMPLEMENTED" }
+                }
+            }, requestId);
+        }
+
         try
         {
             var item = await _engine!.AddDownloadAsync(

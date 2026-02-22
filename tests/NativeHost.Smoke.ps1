@@ -7,76 +7,74 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-if (-not (Test-Path $HostExe)) {
-    Write-Error "Native host executable not found: $HostExe"
+if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
+    throw "Python is required for this smoke script. Install Python or run an equivalent native-messaging test."
 }
 
-$psi = New-Object System.Diagnostics.ProcessStartInfo
-$psi.FileName = (Resolve-Path $HostExe).Path
-$psi.UseShellExecute = $false
-$psi.RedirectStandardInput = $true
-$psi.RedirectStandardOutput = $true
-$psi.RedirectStandardError = $true
+$hostPath = (Resolve-Path $HostExe).Path
+$py = @"
+import json
+import struct
+import subprocess
+import sys
+import time
 
-$proc = New-Object System.Diagnostics.Process
-$proc.StartInfo = $psi
-$null = $proc.Start()
+host_exe = r'''$hostPath'''
+test_url = r'''$TestUrl'''
+file_name = r'''$FileName'''
+wait_seconds = int(r'''$WaitSeconds''')
 
-function Send-Native([object]$obj) {
-    $json = $obj | ConvertTo-Json -Compress -Depth 20
-    $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
-    $len = [System.BitConverter]::GetBytes([int]$bytes.Length)
-    $proc.StandardInput.BaseStream.Write($len, 0, 4)
-    $proc.StandardInput.BaseStream.Write($bytes, 0, $bytes.Length)
-    $proc.StandardInput.BaseStream.Flush()
-}
+p = subprocess.Popen([host_exe], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
-function Read-Exactly([System.IO.Stream]$stream, [int]$count) {
-    $buffer = New-Object byte[] $count
-    $offset = 0
-    while ($offset -lt $count) {
-        $read = $stream.Read($buffer, $offset, $count - $offset)
-        if ($read -le 0) {
-            throw "Stream closed while reading $count bytes"
+def send(msg):
+    data = json.dumps(msg, separators=(',', ':')).encode('utf-8')
+    p.stdin.write(struct.pack('<I', len(data)))
+    p.stdin.write(data)
+    p.stdin.flush()
+
+def read_msg():
+    raw_len = p.stdout.read(4)
+    if not raw_len:
+        return None
+    length = struct.unpack('<I', raw_len)[0]
+    payload = p.stdout.read(length)
+    return json.loads(payload.decode('utf-8'))
+
+try:
+    send({"type": "ping", "payload": {"requestId": "smoke-ping"}})
+    print("Ping:", json.dumps(read_msg(), separators=(',', ':')))
+
+    send({
+        "type": "add_download",
+        "payload": {
+            "requestId": "smoke-add",
+            "url": test_url,
+            "filename": file_name,
+            "referrer": "https://example.com/"
         }
-        $offset += $read
-    }
-    return $buffer
-}
+    })
+    add_resp = read_msg()
+    print("Add:", json.dumps(add_resp, separators=(',', ':')))
 
-function Read-Native() {
-    $lenBytes = Read-Exactly $proc.StandardOutput.BaseStream 4
-    $len = [System.BitConverter]::ToInt32($lenBytes, 0)
-    $payload = Read-Exactly $proc.StandardOutput.BaseStream $len
-    [System.Text.Encoding]::UTF8.GetString($payload) | ConvertFrom-Json
-}
+    download_id = None
+    if add_resp and add_resp.get("type") == "download_added":
+        download_id = add_resp.get("payload", {}).get("downloadId")
 
-try {
-    Send-Native @{ type = "ping"; payload = @{ requestId = "smoke-ping" } }
-    $ping = Read-Native
-    Write-Host "Ping:" ($ping | ConvertTo-Json -Compress -Depth 20)
+    time.sleep(wait_seconds)
 
-    Send-Native @{
-        type = "add_download"
-        payload = @{
-            requestId = "smoke-add"
-            url = $TestUrl
-            filename = $FileName
-            referrer = "https://example.com/"
+    send({
+        "type": "get_status",
+        "payload": {
+            "requestId": "smoke-status",
+            "downloadId": download_id
         }
-    }
-    $added = Read-Native
-    Write-Host "Add:" ($added | ConvertTo-Json -Compress -Depth 20)
+    })
+    print("Status:", json.dumps(read_msg(), separators=(',', ':')))
+finally:
+    try:
+        p.kill()
+    except Exception:
+        pass
+"@
 
-    Start-Sleep -Seconds $WaitSeconds
-
-    Send-Native @{ type = "get_status"; payload = @{ requestId = "smoke-status" } }
-    $status = Read-Native
-    Write-Host "Status:" ($status | ConvertTo-Json -Compress -Depth 20)
-}
-finally {
-    if (-not $proc.HasExited) {
-        $proc.Kill()
-        $proc.WaitForExit()
-    }
-}
+$py | python -
