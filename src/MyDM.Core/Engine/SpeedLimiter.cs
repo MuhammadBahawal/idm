@@ -7,14 +7,12 @@ public class SpeedLimiter
 {
     private readonly SemaphoreSlim _lock = new(1, 1);
     private long _globalLimit; // bytes/sec, 0 = unlimited
-    private long _tokensAvailable;
-    private DateTime _lastRefill;
+    private DateTime _nextAvailableUtc;
 
     public SpeedLimiter(long globalBytesPerSecond = 0)
     {
         _globalLimit = globalBytesPerSecond;
-        _tokensAvailable = globalBytesPerSecond > 0 ? globalBytesPerSecond : long.MaxValue;
-        _lastRefill = DateTime.UtcNow;
+        _nextAvailableUtc = DateTime.UtcNow;
     }
 
     public long GlobalLimit
@@ -23,7 +21,10 @@ public class SpeedLimiter
         set
         {
             _globalLimit = value;
-            if (value == 0) _tokensAvailable = long.MaxValue;
+            if (value == 0)
+            {
+                _nextAvailableUtc = DateTime.UtcNow;
+            }
         }
     }
 
@@ -40,48 +41,33 @@ public class SpeedLimiter
         var effectiveLimit = GetEffectiveLimit(perDownloadLimit);
         if (effectiveLimit == 0) return requested;
 
+        TimeSpan delay = TimeSpan.Zero;
         await _lock.WaitAsync(ct);
         try
         {
-            RefillTokens();
-
-            var allowed = (int)Math.Min(requested, Math.Min(_tokensAvailable, effectiveLimit / 10));
-            if (allowed <= 0)
+            var now = DateTime.UtcNow;
+            if (_nextAvailableUtc < now)
             {
-                // Wait for tokens to refill
-                var divisor = Math.Max(effectiveLimit / Math.Max(requested, 1), 1);
-                var waitMs = Math.Max(50, 1000 / divisor);
-                await Task.Delay(Math.Min((int)waitMs, 200), ct);
-                RefillTokens();
-                allowed = (int)Math.Min(requested, Math.Min(_tokensAvailable, effectiveLimit / 10));
-                allowed = Math.Max(allowed, 1); // Always allow at least 1 byte
+                _nextAvailableUtc = now;
             }
 
-            _tokensAvailable -= allowed;
-            return allowed;
+            delay = _nextAvailableUtc - now;
+
+            // Leaky-bucket scheduling: each chunk reserves its transfer time budget.
+            var transferMs = (double)requested / effectiveLimit * 1000.0;
+            _nextAvailableUtc = _nextAvailableUtc.AddMilliseconds(transferMs);
         }
         finally
         {
             _lock.Release();
         }
-    }
 
-    private void RefillTokens()
-    {
-        var now = DateTime.UtcNow;
-        var elapsed = (now - _lastRefill).TotalSeconds;
-        if (elapsed <= 0) return;
-
-        if (_globalLimit > 0)
+        if (delay > TimeSpan.Zero)
         {
-            _tokensAvailable = Math.Min(_globalLimit, _tokensAvailable + (long)(_globalLimit * elapsed));
-        }
-        else
-        {
-            _tokensAvailable = long.MaxValue;
+            await Task.Delay(delay, ct);
         }
 
-        _lastRefill = now;
+        return requested;
     }
 
     private long GetEffectiveLimit(long perDownloadLimit)

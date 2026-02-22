@@ -1,5 +1,4 @@
 using System.Windows;
-using System.Windows.Controls;
 using MyDM.Core.Data;
 using MyDM.Core.Media;
 using WinForms = System.Windows.Forms;
@@ -8,6 +7,7 @@ namespace MyDM.App.Views;
 
 public partial class SettingsWindow : Window
 {
+    private const string DefaultExtensionId = "gnpallpkcdihlckdkddppkhgblokapdj";
     private readonly DownloadRepository _repository;
 
     public SettingsWindow(DownloadRepository repository)
@@ -26,6 +26,7 @@ public partial class SettingsWindow : Window
         FfmpegPathTextBox.Text = _repository.GetSetting("FfmpegPath") ?? "";
         TimeoutTextBox.Text = _repository.GetSetting("ConnectionTimeout") ?? "30";
         MaxRetriesTextBox.Text = _repository.GetSetting("MaxRetries") ?? "10";
+        ExtensionIdTextBox.Text = _repository.GetSetting("ExtensionId") ?? DefaultExtensionId;
     }
 
     private void BrowseDefaultPath_Click(object sender, RoutedEventArgs e)
@@ -61,12 +62,12 @@ public partial class SettingsWindow : Window
         var version = await muxer.GetVersionAsync();
         if (version != null)
         {
-            FfmpegStatusLabel.Content = $"✅ {version}";
+            FfmpegStatusLabel.Content = $"OK: {version}";
             _repository.SetSetting("FfmpegPath", FfmpegPathTextBox.Text);
         }
         else
         {
-            FfmpegStatusLabel.Content = "❌ ffmpeg not found or not working";
+            FfmpegStatusLabel.Content = "ERROR: ffmpeg not found or not working";
         }
     }
 
@@ -74,9 +75,20 @@ public partial class SettingsWindow : Window
     {
         try
         {
-            // Create the native messaging host manifest and register it
-            var hostPath = Path.Combine(AppContext.BaseDirectory, "MyDM.NativeHost.exe");
+            var hostPath = ResolveNativeHostPath();
+            if (!File.Exists(hostPath))
+            {
+                NativeHostStatus.Content = "ERROR: MyDM.NativeHost.exe not found. Build MyDM.NativeHost first.";
+                return;
+            }
+
             var manifestPath = Path.Combine(AppContext.BaseDirectory, "com.mydm.native.json");
+            var extensionId = (ExtensionIdTextBox.Text ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(extensionId))
+            {
+                extensionId = DefaultExtensionId;
+            }
+            _repository.SetSetting("ExtensionId", extensionId);
 
             var manifest = $$"""
             {
@@ -85,14 +97,13 @@ public partial class SettingsWindow : Window
                 "path": "{{hostPath.Replace("\\", "\\\\")}}",
                 "type": "stdio",
                 "allowed_origins": [
-                    "chrome-extension://*/"
+                    "chrome-extension://{{extensionId}}/"
                 ]
             }
             """;
 
             File.WriteAllText(manifestPath, manifest);
 
-            // Register in Windows registry for Chrome and Edge
             var registryPaths = new[]
             {
                 @"SOFTWARE\Google\Chrome\NativeMessagingHosts\com.mydm.native",
@@ -102,14 +113,14 @@ public partial class SettingsWindow : Window
             foreach (var regPath in registryPaths)
             {
                 using var key = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(regPath);
-                key?.SetValue("", manifestPath);
+                key?.SetValue(string.Empty, manifestPath);
             }
 
-            NativeHostStatus.Content = "✅ Native Host registered successfully";
+            NativeHostStatus.Content = $"OK: Native Host registered for extension {extensionId}";
         }
         catch (Exception ex)
         {
-            NativeHostStatus.Content = $"❌ Failed: {ex.Message}";
+            NativeHostStatus.Content = $"ERROR: {ex.Message}";
         }
     }
 
@@ -120,6 +131,7 @@ public partial class SettingsWindow : Window
         _repository.SetSetting("FfmpegPath", FfmpegPathTextBox.Text);
         _repository.SetSetting("ConnectionTimeout", TimeoutTextBox.Text);
         _repository.SetSetting("MaxRetries", MaxRetriesTextBox.Text);
+        _repository.SetSetting("ExtensionId", ExtensionIdTextBox.Text.Trim());
 
         MessageBox.Show("Settings saved.", "MyDM", MessageBoxButton.OK, MessageBoxImage.Information);
     }
@@ -127,5 +139,25 @@ public partial class SettingsWindow : Window
     private void Close_Click(object sender, RoutedEventArgs e)
     {
         Close();
+    }
+
+    private static string ResolveNativeHostPath()
+    {
+        var candidates = new[]
+        {
+            Path.Combine(AppContext.BaseDirectory, "MyDM.NativeHost.exe"),
+            Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "MyDM.NativeHost", "bin", "Debug", "net8.0", "MyDM.NativeHost.exe")),
+            Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "MyDM.NativeHost", "bin", "Debug", "net8.0", "MyDM.NativeHost.exe"))
+        };
+
+        foreach (var candidate in candidates)
+        {
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
+        }
+
+        return candidates[0];
     }
 }

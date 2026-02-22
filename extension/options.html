@@ -14,9 +14,9 @@
         body {
             background: #0F172A;
             color: #F1F5F9;
-            font-family: 'Segoe UI', system-ui, sans-serif;
+            font-family: "Segoe UI", system-ui, sans-serif;
             padding: 32px;
-            max-width: 600px;
+            max-width: 700px;
             margin: 0 auto;
         }
 
@@ -68,11 +68,12 @@
             border: 1px solid #334155;
             border-radius: 8px;
             padding: 12px;
-            font-family: 'Consolas', monospace;
+            font-family: Consolas, monospace;
             font-size: 12px;
-            max-height: 300px;
+            max-height: 320px;
             overflow-y: auto;
             color: #94A3B8;
+            white-space: pre-wrap;
         }
 
         button {
@@ -84,6 +85,7 @@
             cursor: pointer;
             font-weight: 600;
             margin-top: 8px;
+            margin-right: 8px;
         }
 
         button:hover {
@@ -93,7 +95,7 @@
 </head>
 
 <body>
-    <h1>⚙ MyDM Settings</h1>
+    <h1>MyDM Settings</h1>
 
     <div class="card">
         <h2>Connection Status</h2>
@@ -107,56 +109,102 @@
     <div class="card">
         <h2>Debug Logs</h2>
         <div class="log-box" id="logBox">No logs yet.</div>
+        <button id="refreshLogsBtn">Refresh Logs</button>
         <button id="clearLogsBtn">Clear Logs</button>
     </div>
 
     <div class="card">
-        <h2>Detected Media Cache</h2>
-        <p id="mediaCount" style="color: #94A3B8; margin-bottom: 8px;">0 items in cache</p>
+        <h2>Detected Cache</h2>
+        <p id="mediaCount" style="color: #94A3B8; margin-bottom: 8px;">0 media items in cache</p>
+        <p id="resourceCount" style="color: #94A3B8; margin-bottom: 8px;">0 resources in cache</p>
         <button id="clearMediaBtn">Clear Cache</button>
     </div>
 
     <script>
-        const statusDot = document.getElementById('statusDot');
-        const statusText = document.getElementById('statusText');
-        const testBtn = document.getElementById('testBtn');
-        const logBox = document.getElementById('logBox');
-        const clearLogsBtn = document.getElementById('clearLogsBtn');
-        const clearMediaBtn = document.getElementById('clearMediaBtn');
-        const mediaCount = document.getElementById('mediaCount');
+        const statusDot = document.getElementById("statusDot");
+        const statusText = document.getElementById("statusText");
+        const testBtn = document.getElementById("testBtn");
+        const logBox = document.getElementById("logBox");
+        const refreshLogsBtn = document.getElementById("refreshLogsBtn");
+        const clearLogsBtn = document.getElementById("clearLogsBtn");
+        const clearMediaBtn = document.getElementById("clearMediaBtn");
+        const mediaCount = document.getElementById("mediaCount");
+        const resourceCount = document.getElementById("resourceCount");
 
-        // Check connection
+        function setConnectionStatus(connected, reason) {
+            if (connected) {
+                statusDot.classList.add("ok");
+                statusDot.classList.remove("err");
+                statusText.textContent = "Connected to MyDM Desktop App";
+            } else {
+                statusDot.classList.add("err");
+                statusDot.classList.remove("ok");
+                statusText.textContent = reason
+                    ? `Disconnected: ${reason}`
+                    : "Not connected - make sure MyDM is running";
+            }
+        }
+
         function checkConnection() {
-            chrome.runtime.sendMessage({ type: 'get_connection_status' }, (r) => {
-                if (r?.connected) {
-                    statusDot.classList.add('ok');
-                    statusDot.classList.remove('err');
-                    statusText.textContent = 'Connected to MyDM Desktop App';
-                } else {
-                    statusDot.classList.add('err');
-                    statusDot.classList.remove('ok');
-                    statusText.textContent = 'Not connected — Make sure MyDM is running';
+            chrome.runtime.sendMessage({ type: "get_connection_status" }, (response) => {
+                if (chrome.runtime.lastError) {
+                    setConnectionStatus(false, chrome.runtime.lastError.message);
+                    return;
                 }
+                setConnectionStatus(!!response?.connected, response?.disconnectReason);
             });
         }
 
+        function loadDebugLogs() {
+            chrome.storage.local.get(["debugLogs"], (result) => {
+                const logs = result.debugLogs || [];
+                if (logs.length === 0) {
+                    logBox.textContent = "No logs yet.";
+                    return;
+                }
+
+                logBox.textContent = logs
+                    .slice(-120)
+                    .map((entry) => {
+                        const ts = entry.ts || "";
+                        const level = entry.level || "info";
+                        const event = entry.event || "";
+                        return `${ts} [${level}] ${event} ${JSON.stringify(entry)}`;
+                    })
+                    .join("\n");
+            });
+        }
+
+        function loadCacheCounts() {
+            chrome.storage.local.get(["detectedMedia", "detectedResources"], (result) => {
+                const media = result.detectedMedia || [];
+                const resources = result.detectedResources || [];
+                mediaCount.textContent = `${media.length} media items in cache`;
+                resourceCount.textContent = `${resources.length} resources in cache`;
+            });
+        }
+
+        testBtn.addEventListener("click", () => {
+            checkConnection();
+            loadDebugLogs();
+        });
+        refreshLogsBtn.addEventListener("click", loadDebugLogs);
+
+        clearLogsBtn.addEventListener("click", () => {
+            chrome.storage.local.set({ debugLogs: [] }, () => {
+                logBox.textContent = "Logs cleared.";
+            });
+        });
+
+        clearMediaBtn.addEventListener("click", () => {
+            chrome.storage.local.set({ detectedMedia: [], detectedResources: [] }, () => {
+                loadCacheCounts();
+            });
+        });
+
         checkConnection();
-        testBtn.addEventListener('click', checkConnection);
-
-        // Media cache
-        chrome.storage.local.get(['detectedMedia'], (r) => {
-            const count = (r.detectedMedia || []).length;
-            mediaCount.textContent = `${count} items in cache`;
-        });
-
-        clearMediaBtn.addEventListener('click', () => {
-            chrome.storage.local.set({ detectedMedia: [] });
-            mediaCount.textContent = '0 items in cache';
-        });
-
-        clearLogsBtn.addEventListener('click', () => {
-            logBox.textContent = 'Logs cleared.';
-        });
+        loadDebugLogs();
+        loadCacheCounts();
     </script>
 </body>
 

@@ -1,31 +1,70 @@
 @echo off
-echo === MyDM Native Messaging Host Installer ===
+setlocal
 
-:: Get the directory where this script is located
+echo === MyDM Native Messaging Host Installer ===
+echo.
+
 set SCRIPT_DIR=%~dp0
-set HOST_PATH=%SCRIPT_DIR%MyDM.NativeHost.exe
+set HOST_PATH=%SCRIPT_DIR%bin\Debug\net8.0\MyDM.NativeHost.exe
 set MANIFEST_PATH=%SCRIPT_DIR%com.mydm.native.json
 
-:: Create the manifest
-echo {> "%MANIFEST_PATH%"
-echo   "name": "com.mydm.native",>> "%MANIFEST_PATH%"
-echo   "description": "MyDM Download Manager Native Messaging Host",>> "%MANIFEST_PATH%"
-echo   "path": "%HOST_PATH:\=\\%",>> "%MANIFEST_PATH%"
-echo   "type": "stdio",>> "%MANIFEST_PATH%"
-echo   "allowed_origins": [>> "%MANIFEST_PATH%"
-echo     "chrome-extension://*/",>> "%MANIFEST_PATH%"
-echo   ]>> "%MANIFEST_PATH%"
-echo }>> "%MANIFEST_PATH%"
+if not exist "%HOST_PATH%" (
+    set HOST_PATH=%SCRIPT_DIR%MyDM.NativeHost.exe
+)
 
-:: Register for Chrome
-REG ADD "HKCU\SOFTWARE\Google\Chrome\NativeMessagingHosts\com.mydm.native" /ve /t REG_SZ /d "%MANIFEST_PATH%" /f
+if not exist "%HOST_PATH%" (
+    echo ERROR: MyDM.NativeHost.exe not found.
+    echo Build first: dotnet build MyDM.slnx
+    exit /b 1
+)
+
+set DEFAULT_EXT_ID=gnpallpkcdihlckdkddppkhgblokapdj
+set EXT_ID=%1
+if "%EXT_ID%"=="" (
+    set EXT_ID=%DEFAULT_EXT_ID%
+    echo WARNING: No extension ID provided.
+    echo          Using default ID: %DEFAULT_EXT_ID%
+    echo          If browser popup shows disconnected, rerun with your real extension ID.
+)
+
+echo Using extension ID: %EXT_ID%
+set ORIGIN="chrome-extension://%EXT_ID%/"
+set HOST_PATH_ESCAPED=%HOST_PATH:\=\\%
+
+powershell -NoProfile -Command ^
+    "$manifest = @{" ^
+    "    name = 'com.mydm.native';" ^
+    "    description = 'MyDM Download Manager Native Messaging Host';" ^
+    "    path = '%HOST_PATH_ESCAPED%';" ^
+    "    type = 'stdio';" ^
+    "    allowed_origins = @(%ORIGIN%)" ^
+    "};" ^
+    "$manifest | ConvertTo-Json | Set-Content -Path '%MANIFEST_PATH%' -Encoding UTF8"
+
+if errorlevel 1 (
+    echo ERROR: Failed to write manifest JSON.
+    exit /b 1
+)
+
+echo Created manifest: %MANIFEST_PATH%
+
+REG ADD "HKCU\SOFTWARE\Google\Chrome\NativeMessagingHosts\com.mydm.native" /ve /t REG_SZ /d "%MANIFEST_PATH%" /f >nul 2>&1
+if errorlevel 1 (
+    echo ERROR: Failed to register for Google Chrome.
+    exit /b 1
+)
 echo Registered for Google Chrome.
 
-:: Register for Edge
-REG ADD "HKCU\SOFTWARE\Microsoft\Edge\NativeMessagingHosts\com.mydm.native" /ve /t REG_SZ /d "%MANIFEST_PATH%" /f
+REG ADD "HKCU\SOFTWARE\Microsoft\Edge\NativeMessagingHosts\com.mydm.native" /ve /t REG_SZ /d "%MANIFEST_PATH%" /f >nul 2>&1
+if errorlevel 1 (
+    echo ERROR: Failed to register for Microsoft Edge.
+    exit /b 1
+)
 echo Registered for Microsoft Edge.
 
 echo.
-echo Native Messaging Host registered successfully!
-echo You may need to restart your browser for changes to take effect.
-pause
+echo ========================================
+echo Native Messaging Host installed.
+echo Restart your browser for changes to take effect.
+echo ========================================
+exit /b 0

@@ -92,6 +92,9 @@
                     <TextBlock Text="The MyDM browser extension communicates via Native Messaging." TextWrapping="Wrap"
                                Foreground="{StaticResource TextMutedBrush}" Margin="0,0,0,12"/>
 
+                    <Label Content="Extension ID (from chrome://extensions):" Margin="0,0,0,4"/>
+                    <TextBox x:Name="ExtensionIdTextBox" Width="320" HorizontalAlignment="Left" Margin="0,0,0,8"/>
+
                     <Label x:Name="NativeHostStatus" Content="Native Host: Not registered" Margin="0,0,0,8"/>
                     <Button Content="Register Native Host" Style="{StaticResource PrimaryButton}"
                             HorizontalAlignment="Left" Click="RegisterNativeHost_Click"/>

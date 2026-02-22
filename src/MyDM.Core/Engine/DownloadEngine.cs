@@ -3,6 +3,7 @@ using MyDM.Core.Models;
 using MyDM.Core.Parsers;
 using MyDM.Core.Utilities;
 using System.Collections.Concurrent;
+using System.Net;
 using System.Net.Http.Headers;
 
 namespace MyDM.Core.Engine;
@@ -18,6 +19,7 @@ public class DownloadEngine : IDisposable
     private readonly RetryPolicy _retryPolicy;
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _activeDownloads = new();
     private readonly ConcurrentDictionary<string, DownloadItem> _downloadCache = new();
+    private readonly ConcurrentDictionary<string, IReadOnlyDictionary<string, string>> _requestHeaders = new();
     private readonly SegmentDownloader _segmentDownloader;
 
     public event Action<DownloadItem>? OnProgressUpdated;
@@ -54,7 +56,8 @@ public class DownloadEngine : IDisposable
     /// Add a new download and start fetching file info.
     /// </summary>
     public async Task<DownloadItem> AddDownloadAsync(string url, string? savePath = null,
-        string? fileName = null, int connections = 8, string? category = null)
+        string? fileName = null, int connections = 8, string? category = null,
+        IReadOnlyDictionary<string, string>? requestHeaders = null)
     {
         if (!UrlHelper.IsValidUrl(url))
             throw new ArgumentException("Invalid URL", nameof(url));
@@ -65,14 +68,16 @@ public class DownloadEngine : IDisposable
             FileName = fileName ?? UrlHelper.ExtractFileName(url),
             SavePath = savePath ?? Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads", "MyDM"),
-            Connections = connections,
+            Connections = Math.Clamp(connections, 1, 32),
             Category = category ?? MimeDetector.Detect(url, null)
         };
 
-        // Probe the URL for file info
+        string? probeWarning = null;
+
+        // Probe the URL for file info.
         try
         {
-            var info = await ProbeUrlAsync(url);
+            var info = await ProbeUrlAsync(url, requestHeaders);
             if (info.ContentLength > 0) item.TotalSize = info.ContentLength;
             if (!string.IsNullOrEmpty(info.FileName)) item.FileName = UrlHelper.SanitizeFileName(info.FileName);
             if (!string.IsNullOrEmpty(info.ContentType))
@@ -84,12 +89,20 @@ public class DownloadEngine : IDisposable
         }
         catch (Exception ex)
         {
-            Log(item.Id, "Warning", $"Could not probe URL: {ex.Message}");
+            probeWarning = $"Could not probe URL: {ex.Message}";
         }
 
         FileHelper.EnsureDirectory(item.SavePath);
         _repository.Insert(item);
         _downloadCache[item.Id] = item;
+        if (requestHeaders != null && requestHeaders.Count > 0)
+        {
+            _requestHeaders[item.Id] = new Dictionary<string, string>(requestHeaders, StringComparer.OrdinalIgnoreCase);
+        }
+        if (!string.IsNullOrEmpty(probeWarning))
+        {
+            Log(item.Id, "Warning", probeWarning);
+        }
         Log(item.Id, "Info", $"Download added: {item.FileName} ({FileHelper.FormatSize(item.TotalSize)})");
 
         return item;
@@ -113,6 +126,7 @@ public class DownloadEngine : IDisposable
         _activeDownloads[downloadId] = cts;
 
         item.Status = DownloadStatus.Downloading;
+        item.ErrorMessage = null;
         item.LastAttemptAt = DateTime.UtcNow;
         _repository.Update(item);
         OnStatusChanged?.Invoke(item);
@@ -123,7 +137,19 @@ public class DownloadEngine : IDisposable
             {
                 if (item.SupportsRange && item.TotalSize > 0 && item.Connections > 1)
                 {
-                    await DownloadWithSegmentsAsync(item, cts.Token);
+                    try
+                    {
+                        await DownloadWithSegmentsAsync(item, cts.Token);
+                    }
+                    catch (RangeNotSupportedException ex)
+                    {
+                        Log(item.Id, "Warning", $"{ex.Message} Falling back to single-stream mode.");
+                        item.SupportsRange = false;
+                        item.Segments.Clear();
+                        _repository.DeleteSegments(item.Id);
+                        _repository.Update(item);
+                        await DownloadSingleStreamAsync(item, cts.Token);
+                    }
                 }
                 else
                 {
@@ -135,11 +161,16 @@ public class DownloadEngine : IDisposable
                 {
                     var finalPath = FileHelper.AtomicRename(item.PartFilePath, item.FullPath);
                     item.FileName = Path.GetFileName(finalPath);
+                    var actualSize = new FileInfo(finalPath).Length;
+                    if (item.TotalSize <= 0)
+                    {
+                        item.TotalSize = actualSize;
+                    }
+                    item.DownloadedSize = actualSize;
                 }
 
                 item.Status = DownloadStatus.Complete;
                 item.CompletedAt = DateTime.UtcNow;
-                item.DownloadedSize = item.TotalSize;
                 _repository.Update(item);
                 Log(downloadId, "Info", "Download completed successfully");
                 OnStatusChanged?.Invoke(item);
@@ -244,6 +275,7 @@ public class DownloadEngine : IDisposable
             _repository.DeleteSegments(downloadId);
             _repository.Delete(downloadId);
             _downloadCache.TryRemove(downloadId, out _);
+            _requestHeaders.TryRemove(downloadId, out _);
         }
     }
 
@@ -318,11 +350,13 @@ public class DownloadEngine : IDisposable
 
         var progressLock = new object();
         var lastProgressUpdate = DateTime.MinValue;
+        var headers = GetHeaders(item.Id);
 
         var tasks = pendingSegments.Select(segment => Task.Run(async () =>
         {
             await _segmentDownloader.DownloadSegmentAsync(
                 segment, item.Url, item.SpeedLimit,
+                headers: headers,
                 onProgress: (seg, bytesRead) =>
                 {
                     lock (progressLock)
@@ -369,9 +403,11 @@ public class DownloadEngine : IDisposable
     {
         Log(item.Id, "Info", "Server does not support Range. Downloading as single stream.");
         var lastUpdate = DateTime.MinValue;
+        var headers = GetHeaders(item.Id);
 
         await _segmentDownloader.DownloadSingleStreamAsync(
             item.Url, item.PartFilePath, item.SpeedLimit,
+            headers: headers,
             onProgress: (downloaded, total) =>
             {
                 item.DownloadedSize = downloaded;
@@ -415,29 +451,28 @@ public class DownloadEngine : IDisposable
         return segments;
     }
 
-    private async Task<ProbeResult> ProbeUrlAsync(string url)
+    private async Task<ProbeResult> ProbeUrlAsync(string url, IReadOnlyDictionary<string, string>? headers = null)
     {
-        var request = new HttpRequestMessage(HttpMethod.Head, url);
-        var response = await _httpClient.SendAsync(request);
-        response.EnsureSuccessStatusCode();
-
-        var contentLength = response.Content.Headers.ContentLength ?? 0;
-        var contentType = response.Content.Headers.ContentType?.MediaType;
-        var supportsRange = response.Headers.AcceptRanges?.Contains("bytes") == true
-                           || response.StatusCode == System.Net.HttpStatusCode.PartialContent;
-
-        // Try to get filename from Content-Disposition
-        var disposition = response.Content.Headers.ContentDisposition;
-        var fileName = disposition?.FileNameStar ?? disposition?.FileName;
-        fileName = fileName?.Trim('"');
-
-        return new ProbeResult
+        // HEAD first for fast metadata, then fall back to a ranged GET for servers that reject HEAD.
+        try
         {
-            ContentLength = contentLength,
-            ContentType = contentType,
-            SupportsRange = supportsRange,
-            FileName = fileName
-        };
+            using var headRequest = new HttpRequestMessage(HttpMethod.Head, url);
+            ApplyHeaders(headRequest, headers);
+            using var headResponse = await _httpClient.SendAsync(headRequest, HttpCompletionOption.ResponseHeadersRead);
+            headResponse.EnsureSuccessStatusCode();
+
+            return BuildProbeResultFromResponse(headResponse, url);
+        }
+        catch
+        {
+            using var getRequest = new HttpRequestMessage(HttpMethod.Get, url);
+            getRequest.Headers.Range = new RangeHeaderValue(0, 0);
+            ApplyHeaders(getRequest, headers);
+            using var getResponse = await _httpClient.SendAsync(getRequest, HttpCompletionOption.ResponseHeadersRead);
+            getResponse.EnsureSuccessStatusCode();
+
+            return BuildProbeResultFromResponse(getResponse, url);
+        }
     }
 
     private void SaveSegmentProgress(DownloadItem item)
@@ -461,6 +496,61 @@ public class DownloadEngine : IDisposable
     {
         _repository.AddLog(downloadId, level, message);
         OnLogMessage?.Invoke(downloadId, $"[{level}] {message}");
+    }
+
+    private IReadOnlyDictionary<string, string>? GetHeaders(string downloadId)
+    {
+        return _requestHeaders.TryGetValue(downloadId, out var headers) ? headers : null;
+    }
+
+    private static void ApplyHeaders(HttpRequestMessage request, IReadOnlyDictionary<string, string>? headers)
+    {
+        if (headers == null || headers.Count == 0) return;
+
+        foreach (var (key, value) in headers)
+        {
+            if (string.IsNullOrWhiteSpace(key) || string.IsNullOrWhiteSpace(value))
+                continue;
+
+            if (string.Equals(key, "Referrer", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(key, "Referer", StringComparison.OrdinalIgnoreCase))
+            {
+                if (Uri.TryCreate(value, UriKind.Absolute, out var refUri))
+                {
+                    request.Headers.Referrer = refUri;
+                }
+                continue;
+            }
+
+            request.Headers.TryAddWithoutValidation(key, value);
+        }
+    }
+
+    private static ProbeResult BuildProbeResultFromResponse(HttpResponseMessage response, string fallbackUrl)
+    {
+        var contentLength = response.Content.Headers.ContentRange?.Length
+            ?? response.Content.Headers.ContentLength
+            ?? 0;
+        var contentType = response.Content.Headers.ContentType?.MediaType;
+        var supportsRange = response.StatusCode == HttpStatusCode.PartialContent
+            || response.Headers.AcceptRanges?.Contains("bytes") == true
+            || response.Content.Headers.ContentRange != null;
+
+        var disposition = response.Content.Headers.ContentDisposition;
+        var fileName = disposition?.FileNameStar ?? disposition?.FileName;
+        fileName = fileName?.Trim('"');
+        if (string.IsNullOrWhiteSpace(fileName))
+        {
+            fileName = UrlHelper.ExtractFileName(fallbackUrl);
+        }
+
+        return new ProbeResult
+        {
+            ContentLength = contentLength,
+            ContentType = contentType,
+            SupportsRange = supportsRange,
+            FileName = fileName
+        };
     }
 
     public void Dispose()

@@ -2,34 +2,20 @@
    MyDM Browser Extension — Overlay & Modal Styles
    ═══════════════════════════════════════════════════════════ */
 
-/* ── Download Button Overlay ── */
-.mydm-overlay-btn {
+/* ── Download Button Overlay Host ──
+   NOTE: The actual download button lives inside a Shadow DOM
+   attached to .mydm-overlay-host. Its styles are injected
+   inline in content.ts and are fully isolated from the page.
+   This file only styles the modal, toast, and backdrop. */
+
+.mydm-overlay-host {
   position: absolute;
-  top: 10px;
-  right: 10px;
-  z-index: 99999;
-  background: linear-gradient(135deg, #3B82F6, #2563EB);
-  color: white;
-  border: none;
-  border-radius: 8px;
-  padding: 8px 16px;
-  font-size: 13px;
-  font-weight: 600;
-  font-family: 'Segoe UI', system-ui, sans-serif;
-  cursor: pointer;
-  opacity: 0;
-  transition: opacity 0.3s ease, transform 0.2s ease;
-  box-shadow: 0 4px 16px rgba(59, 130, 246, 0.4);
-}
-
-.mydm-overlay-btn:hover {
-  background: linear-gradient(135deg, #2563EB, #1D4ED8);
-  transform: scale(1.05);
-}
-
-*:hover > .mydm-overlay-btn,
-.mydm-overlay-btn:hover {
-  opacity: 1;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 2147483647;
 }
 
 /* ── Quality Selection Modal ── */
@@ -146,7 +132,7 @@
   font-size: 14px;
   font-weight: 500;
   font-family: 'Segoe UI', system-ui, sans-serif;
-  z-index: 999999;
+  z-index: 2147483647;
   box-shadow: 0 8px 24px rgba(16, 185, 129, 0.3);
   animation: mydm-toast-in 0.3s ease;
 }

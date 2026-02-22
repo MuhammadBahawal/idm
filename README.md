@@ -1,120 +1,101 @@
-# MyDM — Internet Download Manager
+# MyDM - Internet Download Manager Style Downloader
 
-A production-grade download manager with a .NET 8 WPF desktop app and Chrome/Edge browser extension (Manifest V3).
+MyDM is a Windows-first downloader made of:
+- `MyDM.App` (WPF desktop UI)
+- `MyDM.NativeHost` (Chrome/Edge native messaging bridge)
+- `MyDM.Core` (download engine, parsers, queue, storage)
+- `extension/` (Manifest V3 Chrome/Edge extension)
 
 ## Features
+- Multi-segment downloads with HTTP range requests
+- Pause/resume and state restore
+- Retry with backoff
+- Queue manager and category grouping
+- HLS/DASH detection and handoff (non-DRM only)
+- Browser integration via Native Messaging
 
-- **Multi-segment downloading** — HTTP Range requests with configurable connections (1–32)
-- **Pause/Resume** — Persistent state survives app restarts
-- **HLS/DASH support** — Parse manifests, select quality, download segments (non-DRM only)
-- **ffmpeg muxing** — Merge video+audio streams into MP4/MKV
-- **Queue & Scheduler** — Sequential, concurrent, or time-based queue processing
-- **Speed Limiter** — Global and per-download bandwidth controls
-- **Browser Extension** — Chrome/Edge context menu, video overlay, quality selection modal
-- **Categories** — Auto-detect: Video, Music, Documents, Programs, Compressed, Others
-- **Dark Theme UI** — IDM-inspired modern WPF interface
-- **Native Messaging** — Secure extension↔desktop communication
-- **Crash Recovery** — Download state persisted in SQLite, .part files, atomic rename on completion
-- **Retry with Backoff** — Exponential backoff with jitter, HTTP error classification
-
-## Architecture
-
-```
-┌──────────────────┐  Native Messaging   ┌──────────────────┐
-│  Browser Extension│◄──────────────────►│  MyDM.NativeHost │
-│  (TypeScript/MV3) │      stdio          │  (.NET Console)  │
-└──────────────────┘                     └────────┬─────────┘
-                                                  │ shares
-                                         ┌────────▼─────────┐
-                                         │    MyDM.Core      │
-                                         │  (Engine, DB,     │
-                                         │   Parsers, Queue) │
-                                         └────────▲─────────┘
-                                                  │ references
-                                         ┌────────┴─────────┐
-                                         │    MyDM.App       │
-                                         │  (WPF Desktop)    │
-                                         └──────────────────┘
-```
-
-## Quick Start
-
-### Prerequisites
+## Prerequisites
+- Windows 10/11
 - .NET 8 SDK
-- Node.js 18+ (for extension build)
-- ffmpeg (optional, for HLS/DASH muxing)
+- Node.js 18+
+- Optional: `ffmpeg` for advanced media workflows
 
-### Build & Run
-
-```bash
-# Build the entire solution
+## Fresh Clone Build
+```powershell
 dotnet build MyDM.slnx
+dotnet test tests\MyDM.Core.Tests\MyDM.Core.Tests.csproj
 
-# Run the desktop app
-dotnet run --project src/MyDM.App/MyDM.App.csproj
-
-# Run tests
-dotnet test tests/MyDM.Core.Tests/MyDM.Core.Tests.csproj
-
-# Build the extension
-cd extension && npm install && npm run build
+cd extension
+npm install
+npm run build
+cd ..
 ```
 
-### Install the Extension
-1. Build the extension (`cd extension && npm run build`)
-2. Open Chrome → `chrome://extensions` → Enable Developer Mode
-3. Click "Load unpacked" → select the `extension/` folder
-4. Register native host: run `src/MyDM.NativeHost/install-host.bat`
-
-## Project Structure
-
+## Run Desktop + Native Host
+### Option A: Run desktop app
+```powershell
+dotnet run --project src\MyDM.App\MyDM.App.csproj
 ```
+
+### Option B: Run native host directly for protocol smoke
+```powershell
+dotnet run --project src\MyDM.NativeHost\MyDM.NativeHost.csproj
+```
+
+Native host logs are written to:
+- `%LOCALAPPDATA%\MyDM\nativehost.log`
+
+## Load Extension (Chrome/Edge)
+1. Build extension: `cd extension && npm run build`
+2. Open `chrome://extensions` or `edge://extensions`
+3. Enable Developer Mode
+4. Click `Load unpacked` and select `extension/`
+5. Copy the extension ID shown in the browser
+
+## Register Native Messaging Host
+Use the extension ID from step 5:
+```powershell
+src\MyDM.NativeHost\install-host.bat <EXTENSION_ID>
+```
+
+Or inside desktop app:
+- Open `Settings -> Extension`
+- Set `Extension ID`
+- Click `Register Native Host`
+
+Important:
+- Native messaging requires an exact extension ID in `allowed_origins`.
+- If extension ID changes, re-register host.
+
+## Smoke Checklist
+1. Open extension popup and verify `Connected to MyDM`.
+2. On a page with downloadable media/file, click `Download with MyDM`.
+3. Confirm native host log shows correlated `requestId` events.
+4. Confirm desktop/host status transitions to `Downloading` then `Complete`.
+5. Verify saved file exists under `Downloads\MyDM` (or configured folder).
+
+Automated native host smoke:
+```powershell
+powershell -ExecutionPolicy Bypass -File tests\NativeHost.Smoke.ps1
+```
+
+## Known Limits
+- DRM-protected streams are not supported.
+- Extension automation across real sites still requires manual browser validation.
+- Native messaging setup depends on matching browser extension ID.
+
+## Project Layout
+```text
 d:\idm\
-├── MyDM.slnx                    # Solution file
-├── src/
-│   ├── MyDM.Core/               # Core library (no UI dependency)
-│   │   ├── Data/                 # SQLite database + repository
-│   │   ├── Engine/               # DownloadEngine, SegmentDownloader, SpeedLimiter, RetryPolicy
-│   │   ├── Media/                # FfmpegMuxer
-│   │   ├── Models/               # DownloadItem, DownloadSegment, NativeMessage, etc.
-│   │   ├── Parsers/              # HlsParser, DashParser, MimeDetector
-│   │   ├── Queue/                # QueueManager
-│   │   └── Utilities/            # UrlHelper, FileHelper
-│   ├── MyDM.App/                 # WPF desktop application
-│   │   ├── Converters/           # WPF value converters
-│   │   ├── Themes/               # Dark theme resource dictionary
-│   │   ├── ViewModels/           # MainViewModel, DownloadItemViewModel
-│   │   └── Views/                # MainWindow, AddUrlDialog, Settings, Details
-│   └── MyDM.NativeHost/          # Native Messaging host (Chrome/Edge bridge)
-├── tests/
-│   └── MyDM.Core.Tests/          # Unit tests (55 tests)
-└── extension/                    # Chrome/Edge extension (MV3)
-    ├── src/                      # TypeScript source
-    ├── dist/                     # Compiled output
-    ├── icons/                    # Extension icons
-    ├── popup.html                # Extension popup
-    └── options.html              # Extension settings
+  MyDM.slnx
+  src\
+    MyDM.Core\
+    MyDM.App\
+    MyDM.NativeHost\
+  tests\
+    MyDM.Core.Tests\
+  extension\
 ```
-
-## Database Schema (SQLite)
-
-| Table | Purpose |
-|-------|---------|
-| Downloads | All download records with URL, path, status, progress |
-| Segments | Per-download HTTP Range segments |
-| Queues | Named download queues |
-| QueueItems | Download-to-queue mapping |
-| Categories | File type categorization rules |
-| Settings | Key-value app settings |
-| Logs | Per-download event log entries |
-
-## Known Limitations
-
-- **DRM not supported** — By design, no DRM circumvention (Netflix, Prime, etc.)
-- **FTP not supported** — Only HTTP/HTTPS downloads
-- **Windows only** — macOS/Linux support is a future roadmap item
-- **ffmpeg required** — For HLS/DASH muxing, ffmpeg must be installed separately
 
 ## License
-
 MIT

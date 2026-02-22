@@ -1,7 +1,7 @@
 {
   "format": 1,
   "restore": {
-    "d:\\idm\\tests\\MyDM.Core.Tests\\MyDM.Core.Tests.csproj": {}
+    "D:\\idm\\tests\\MyDM.Core.Tests\\MyDM.Core.Tests.csproj": {}
   },
   "projects": {
     "D:\\idm\\src\\MyDM.Core\\MyDM.Core.csproj": {
@@ -75,14 +75,14 @@
         }
       }
     },
-    "d:\\idm\\tests\\MyDM.Core.Tests\\MyDM.Core.Tests.csproj": {
+    "D:\\idm\\tests\\MyDM.Core.Tests\\MyDM.Core.Tests.csproj": {
       "version": "1.0.0",
       "restore": {
-        "projectUniqueName": "d:\\idm\\tests\\MyDM.Core.Tests\\MyDM.Core.Tests.csproj",
+        "projectUniqueName": "D:\\idm\\tests\\MyDM.Core.Tests\\MyDM.Core.Tests.csproj",
         "projectName": "MyDM.Core.Tests",
-        "projectPath": "d:\\idm\\tests\\MyDM.Core.Tests\\MyDM.Core.Tests.csproj",
+        "projectPath": "D:\\idm\\tests\\MyDM.Core.Tests\\MyDM.Core.Tests.csproj",
         "packagesPath": "C:\\Users\\MuhammadBahawal\\.nuget\\packages\\",
-        "outputPath": "d:\\idm\\tests\\MyDM.Core.Tests\\obj\\",
+        "outputPath": "D:\\idm\\tests\\MyDM.Core.Tests\\obj\\",
         "projectStyle": "PackageReference",
         "fallbackFolders": [
           "C:\\Program Files (x86)\\Microsoft Visual Studio\\Shared\\NuGetPackages"
