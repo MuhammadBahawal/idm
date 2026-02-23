@@ -28,16 +28,16 @@ if "%EXT_ID%"=="" (
 )
 
 echo Using extension ID: %EXT_ID%
-set ORIGIN="chrome-extension://%EXT_ID%/"
 set HOST_PATH_ESCAPED=%HOST_PATH:\=\\%
 
 powershell -NoProfile -Command ^
+    "$origin = 'chrome-extension://%EXT_ID%/';" ^
     "$manifest = @{" ^
     "    name = 'com.mydm.native';" ^
     "    description = 'MyDM Download Manager Native Messaging Host';" ^
     "    path = '%HOST_PATH_ESCAPED%';" ^
     "    type = 'stdio';" ^
-    "    allowed_origins = @(%ORIGIN%)" ^
+    "    allowed_origins = @($origin)" ^
     "};" ^
     "$manifest | ConvertTo-Json | Set-Content -Path '%MANIFEST_PATH%' -Encoding UTF8"
 

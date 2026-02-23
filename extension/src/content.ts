@@ -11,6 +11,10 @@ interface RuntimeResponse {
     connected?: boolean;
     disconnectReason?: string;
     requestId?: string;
+    url?: string;
+    quality?: string;
+    mimeType?: string;
+    muxed?: boolean;
 }
 
 interface OverlayController {
@@ -102,6 +106,60 @@ function getMediaUrl(video: HTMLVideoElement): string | null {
     if (source?.src) return source.src;
 
     return null;
+}
+
+function isHttpUrl(url: string | null | undefined): url is string {
+    if (!url) return false;
+    try {
+        const parsed = new URL(url);
+        return parsed.protocol === "http:" || parsed.protocol === "https:";
+    } catch {
+        return false;
+    }
+}
+
+function inferExtensionFromUrl(url: string): string | null {
+    try {
+        const parsed = new URL(url);
+        const file = parsed.pathname.split("/").pop() || "";
+        const dot = file.lastIndexOf(".");
+        if (dot <= 0) return null;
+        const ext = file.slice(dot + 1).toLowerCase();
+        if (!ext || ext.length > 8) return null;
+        return ext;
+    } catch {
+        return null;
+    }
+}
+
+function inferExtensionFromMime(mimeType?: string): string {
+    if (!mimeType) return "mp4";
+    const lower = mimeType.toLowerCase();
+    if (lower.includes("webm")) return "webm";
+    if (lower.includes("audio/mp4")) return "m4a";
+    if (lower.includes("mp4")) return "mp4";
+    return "mp4";
+}
+
+async function resolveFallbackVideoSource(): Promise<RuntimeResponse | null> {
+    try {
+        const resolved = await sendRuntimeMessage<RuntimeResponse>({
+            type: "resolve_video_source",
+            requestId: genRequestId("resolve"),
+            pageUrl: location.href,
+            preferMuxed: true
+        });
+        if (resolved?.success && isHttpUrl(resolved.url)) {
+            return resolved;
+        }
+        if (resolved?.error) {
+            log("warn", "resolve_video_source_failed", { error: resolved.error, pageUrl: location.href });
+        }
+        return null;
+    } catch (error) {
+        log("warn", "resolve_video_source_error", { error: String(error), pageUrl: location.href });
+        return null;
+    }
 }
 
 function resolveUrl(url: string, baseUrl: string): string {
@@ -472,8 +530,26 @@ function injectVideoOverlay(video: HTMLVideoElement): void {
         event.stopPropagation();
         event.preventDefault();
 
-        const url = getMediaUrl(video);
-        if (!url) {
+        let url = getMediaUrl(video);
+        let resolvedQuality: string | undefined;
+        let resolvedMimeType: string | undefined;
+
+        if (!isHttpUrl(url)) {
+            const fallback = await resolveFallbackVideoSource();
+            if (fallback?.url && isHttpUrl(fallback.url)) {
+                url = fallback.url;
+                resolvedQuality = fallback.quality || undefined;
+                resolvedMimeType = fallback.mimeType || undefined;
+                log("info", "fallback_video_source_resolved", {
+                    url,
+                    quality: resolvedQuality,
+                    mimeType: resolvedMimeType,
+                    muxed: fallback.muxed ?? null
+                });
+            }
+        }
+
+        if (!isHttpUrl(url)) {
             showNotification("⚠ No downloadable source found", true);
             return;
         }
@@ -484,14 +560,18 @@ function injectVideoOverlay(video: HTMLVideoElement): void {
             return;
         }
 
+        const extension = inferExtensionFromUrl(url) || inferExtensionFromMime(resolvedMimeType);
+        const qualitySuffix = resolvedQuality ? `_${sanitizeFileName(resolvedQuality).replace(/\s+/g, "")}` : "";
+
         const ok = await sendDownloadToBackground({
             type: "download_with_mydm",
             url,
-            filename: `${sanitizeFileName(document.title || "video")}.mp4`
+            filename: `${sanitizeFileName(document.title || "video")}${qualitySuffix}.${extension}`
         });
 
         if (ok) {
-            showNotification("✅ Sent to MyDM");
+            const qualityText = resolvedQuality ? ` (${resolvedQuality})` : "";
+            showNotification(`✅ Sent to MyDM${qualityText}`);
         }
     });
 

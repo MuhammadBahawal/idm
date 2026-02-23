@@ -1,0 +1,9 @@
+﻿{
+    "path":  "D:\\\\idm\\\\src\\\\MyDM.NativeHost\\\\bin\\\\Debug\\\\net8.0\\\\MyDM.NativeHost.exe",
+    "description":  "MyDM Download Manager Native Messaging Host",
+    "name":  "com.mydm.native",
+    "allowed_origins":  [
+                            "chrome-extension://gnpallpkcdihlckdkddppkhgblokapdj/"
+                        ],
+    "type":  "stdio"
+}
