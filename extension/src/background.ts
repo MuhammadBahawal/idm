@@ -5,6 +5,9 @@ const MAX_DETECTED_MEDIA = 100;
 const MAX_DETECTED_RESOURCES = 200;
 const MAX_STREAM_CANDIDATES_PER_TAB = 300;
 
+// Media content-type prefixes we care about for non-YouTube sites
+const MEDIA_CONTENT_TYPES = ["video/", "audio/"];
+
 const DOWNLOAD_EXTENSIONS = new Set([
     "zip", "rar", "7z", "tar", "gz", "bz2", "xz", "iso",
     "exe", "msi", "dmg", "deb", "rpm", "apk",
@@ -26,6 +29,8 @@ interface ExtMessage {
     requestId?: string;
     resources?: Array<Record<string, unknown>>;
     pageUrl?: string;
+    videoUrl?: string;
+    audioUrl?: string;
     preferMuxed?: boolean;
 }
 
@@ -98,6 +103,31 @@ const YOUTUBE_ITAG_PROFILES: Record<number, ItagProfile> = {
     313: { qualityLabel: "2160p", height: 2160, hasVideo: true, hasAudio: false, muxed: false },
     315: { qualityLabel: "2160p60", height: 2160, hasVideo: true, hasAudio: false, muxed: false }
 };
+
+// ──── Cookie Helper ────
+
+async function getCookiesForUrl(url: string): Promise<string> {
+    try {
+        const parsed = new URL(url);
+        const cookies = await chrome.cookies.getAll({ url: parsed.origin });
+        if (cookies.length === 0) return "";
+        return cookies.map((c) => `${c.name}=${c.value}`).join("; ");
+    } catch {
+        return "";
+    }
+}
+
+async function buildHeadersWithCookies(
+    url: string,
+    extra?: Record<string, string>
+): Promise<Record<string, string>> {
+    const headers: Record<string, string> = { ...(extra || {}) };
+    const cookieString = await getCookiesForUrl(url);
+    if (cookieString) {
+        headers["Cookie"] = cookieString;
+    }
+    return headers;
+}
 
 function nowIso(): string {
     return new Date().toISOString();
@@ -294,6 +324,34 @@ function postToNative(type: string, payload: Record<string, unknown>): Promise<S
     });
 }
 
+// Fallback download using Chrome's built-in downloads API
+// Used when NativeHost is not available or fails
+function chromeDownloadFallback(url: string, filename?: string): Promise<number> {
+    return new Promise((resolve, reject) => {
+        const options: chrome.downloads.DownloadOptions = { url };
+        if (filename) {
+            // Chrome doesn't allow path separators in filename
+            options.filename = filename.replace(/[/\\]/g, "_");
+        }
+        chrome.downloads.download(options, (downloadId) => {
+            if (chrome.runtime.lastError) {
+                reject(new Error(chrome.runtime.lastError.message));
+                return;
+            }
+            if (typeof downloadId !== "number") {
+                reject(new Error("Download did not start"));
+                return;
+            }
+            appendDebugLog("info", "download.chrome_fallback_started", {
+                downloadId,
+                url: url.substring(0, 100),
+                filename
+            });
+            resolve(downloadId);
+        });
+    });
+}
+
 async function probeNativeHost(): Promise<SendResult> {
     return postToNative("healthcheck", {});
 }
@@ -335,7 +393,10 @@ function isYoutubeHost(host: string): boolean {
     return lower.includes("googlevideo.com") || lower.endsWith("youtube.com") || lower === "youtu.be";
 }
 
-function buildStreamCandidate(urlValue: string, tabId: number): StreamCandidate | null {
+// Track response Content-Type by requestId for non-YouTube media detection
+const responseContentTypes = new Map<string, string>();
+
+function buildStreamCandidate(urlValue: string, tabId: number, contentType?: string): StreamCandidate | null {
     if (tabId < 0) return null;
     let parsed: URL;
     try {
@@ -345,9 +406,13 @@ function buildStreamCandidate(urlValue: string, tabId: number): StreamCandidate 
     }
 
     const host = parsed.hostname.toLowerCase();
+    const ytHost = isYoutubeHost(host);
     const itag = parseIntParam(parsed, "itag");
     const profile = itag !== undefined ? YOUTUBE_ITAG_PROFILES[itag] : undefined;
-    const mimeType = parsed.searchParams.get("mime") || undefined;
+
+    // YouTube uses mime=video%2Fmp4 which searchParams.get auto-decodes
+    const rawMime = parsed.searchParams.get("mime");
+    const mimeType = rawMime || contentType || undefined;
     const qualityLabel = profile?.qualityLabel
         || parsed.searchParams.get("quality_label")
         || parsed.searchParams.get("quality")
@@ -356,10 +421,27 @@ function buildStreamCandidate(urlValue: string, tabId: number): StreamCandidate 
 
     let hasVideo = profile?.hasVideo ?? false;
     let hasAudio = profile?.hasAudio ?? false;
+
+    // Infer from MIME type if no profile found
     if (!profile && mimeType) {
         const lower = mimeType.toLowerCase();
         if (lower.startsWith("video/")) hasVideo = true;
         if (lower.startsWith("audio/")) hasAudio = true;
+    }
+
+    // For YouTube hosts with /videoplayback, accept even if no known profile
+    // (YouTube may use itag values not in our static table)
+    const isVideoPlayback = ytHost && parsed.pathname.includes("/videoplayback");
+    if (isVideoPlayback && !hasVideo && !hasAudio) {
+        // Default to video if we can't determine type
+        if (rawMime) {
+            const decodedMime = decodeURIComponent(rawMime).toLowerCase();
+            if (decodedMime.startsWith("video/")) hasVideo = true;
+            else if (decodedMime.startsWith("audio/")) hasAudio = true;
+            else hasVideo = true; // default assumption
+        } else {
+            hasVideo = true; // assume video for videoplayback URLs
+        }
     }
 
     const isMediaByQuery = Boolean(
@@ -369,11 +451,17 @@ function buildStreamCandidate(urlValue: string, tabId: number): StreamCandidate 
         || parsed.searchParams.get("mime")
     );
 
-    if (!hasVideo && !hasAudio && !isMediaByQuery) {
+    // For non-YouTube hosts, also accept if contentType indicates media
+    const isMediaByContentType = contentType
+        ? MEDIA_CONTENT_TYPES.some((prefix) => contentType.toLowerCase().startsWith(prefix))
+        : false;
+
+    if (!hasVideo && !hasAudio && !isMediaByQuery && !isMediaByContentType && !isVideoPlayback) {
         return null;
     }
 
-    if (!isYoutubeHost(host) && !isDirectDownloadUrl(urlValue) && !isMediaByQuery) {
+    // Accept candidates from any host if we have media evidence
+    if (!ytHost && !isDirectDownloadUrl(urlValue) && !isMediaByQuery && !isMediaByContentType) {
         return null;
     }
 
@@ -401,7 +489,39 @@ function rememberStreamCandidate(candidate: StreamCandidate): void {
     list.push(candidate);
     list.sort((a, b) => b.timestamp - a.timestamp);
     tabStreamCandidates.set(candidate.tabId, list.slice(0, MAX_STREAM_CANDIDATES_PER_TAB));
+
+    // Persist to session storage so stream URLs survive service worker restarts
+    persistStreamCandidates();
 }
+
+function persistStreamCandidates(): void {
+    const data: Record<string, StreamCandidate[]> = {};
+    tabStreamCandidates.forEach((v, k) => {
+        data[String(k)] = v;
+    });
+    chrome.storage.session?.set({ _streamCandidates: data }).catch(() => { /* ignore */ });
+}
+
+async function restoreStreamCandidates(): Promise<void> {
+    try {
+        const result = await chrome.storage.session?.get("_streamCandidates");
+        const data = result?._streamCandidates as Record<string, StreamCandidate[]> | undefined;
+        if (!data) return;
+        for (const [key, candidates] of Object.entries(data)) {
+            const tabId = Number(key);
+            if (!isNaN(tabId) && Array.isArray(candidates)) {
+                tabStreamCandidates.set(tabId, candidates);
+            }
+        }
+        appendDebugLog("info", "stream_candidates.restored", {
+            tabs: Object.keys(data).length,
+            total: [...tabStreamCandidates.values()].reduce((s, l) => s + l.length, 0)
+        });
+    } catch { /* session storage might not be available */ }
+}
+
+// Restore persisted stream candidates on service worker startup
+restoreStreamCandidates();
 
 function scoreStreamCandidate(candidate: StreamCandidate, preferMuxed: boolean): number {
     const muxedBonus = preferMuxed && candidate.muxed ? 1_000_000 : 0;
@@ -447,6 +567,30 @@ function resolveBestStreamCandidate(
 
     const ranked = rankStreamCandidates(filtered, preferMuxed);
     return ranked[0] || null;
+}
+
+function resolveBestAudioCandidate(
+    tabId: number,
+    pageUrl?: string
+): StreamCandidate | null {
+    const all = tabStreamCandidates.get(tabId) || [];
+    if (all.length === 0) return null;
+
+    const audioOnly = filterCandidatesForPage(
+        all.filter((candidate) => candidate.hasAudio && !candidate.hasVideo),
+        pageUrl
+    );
+    if (audioOnly.length === 0) return null;
+
+    // Prefer highest-quality audio (itag 251 > 250 > 249 > 140)
+    const preferredItags = [251, 250, 249, 140];
+    for (const itag of preferredItags) {
+        const match = audioOnly.find((c) => c.itag === itag);
+        if (match) return match;
+    }
+
+    // Fallback: sort by timestamp (most recent first)
+    return audioOnly.sort((a, b) => b.timestamp - a.timestamp)[0] || null;
 }
 
 function rememberDetectedMedia(item: Record<string, unknown>): void {
@@ -496,14 +640,85 @@ function createContextMenus(): void {
 chrome.runtime.onInstalled.addListener(() => {
     createContextMenus();
     void probeNativeHost();
+    void installGoogleVideoHeaderRules();
 });
 
 chrome.runtime.onStartup.addListener(() => {
     void probeNativeHost();
 });
 
+// ─── CRITICAL: Inject Referer/Origin headers for googlevideo.com downloads ───
+// Without these headers, googlevideo.com returns HTTP 403 Forbidden.
+// MV3 requires declarativeNetRequest instead of blocking webRequest.
+async function installGoogleVideoHeaderRules(): Promise<void> {
+    const RULE_ID_REFERER = 1;
+    const RULE_ID_ORIGIN = 2;
+
+    try {
+        // Remove old rules first
+        await chrome.declarativeNetRequest.updateDynamicRules({
+            removeRuleIds: [RULE_ID_REFERER, RULE_ID_ORIGIN]
+        });
+
+        // Add header injection rules
+        await chrome.declarativeNetRequest.updateDynamicRules({
+            addRules: [
+                {
+                    id: RULE_ID_REFERER,
+                    priority: 1,
+                    action: {
+                        type: chrome.declarativeNetRequest.RuleActionType.MODIFY_HEADERS,
+                        requestHeaders: [
+                            {
+                                header: "Referer",
+                                operation: chrome.declarativeNetRequest.HeaderOperation.SET,
+                                value: "https://www.youtube.com/"
+                            }
+                        ]
+                    },
+                    condition: {
+                        urlFilter: "*://*.googlevideo.com/*",
+                        resourceTypes: [
+                            chrome.declarativeNetRequest.ResourceType.XMLHTTPREQUEST,
+                            chrome.declarativeNetRequest.ResourceType.MEDIA,
+                            chrome.declarativeNetRequest.ResourceType.OTHER
+                        ]
+                    }
+                },
+                {
+                    id: RULE_ID_ORIGIN,
+                    priority: 1,
+                    action: {
+                        type: chrome.declarativeNetRequest.RuleActionType.MODIFY_HEADERS,
+                        requestHeaders: [
+                            {
+                                header: "Origin",
+                                operation: chrome.declarativeNetRequest.HeaderOperation.SET,
+                                value: "https://www.youtube.com"
+                            }
+                        ]
+                    },
+                    condition: {
+                        urlFilter: "*://*.googlevideo.com/*",
+                        resourceTypes: [
+                            chrome.declarativeNetRequest.ResourceType.XMLHTTPREQUEST,
+                            chrome.declarativeNetRequest.ResourceType.MEDIA,
+                            chrome.declarativeNetRequest.ResourceType.OTHER
+                        ]
+                    }
+                }
+            ]
+        });
+
+        appendDebugLog("info", "header_rules.installed", { rules: 2 });
+    } catch (error) {
+        appendDebugLog("error", "header_rules.install_failed", { error: safeString(error) });
+    }
+}
+
 chrome.tabs.onRemoved.addListener((tabId) => {
     tabStreamCandidates.delete(tabId);
+    persistStreamCandidates();
 });
 
 chrome.contextMenus.onClicked.addListener((info: chrome.contextMenus.OnClickData, tab?: chrome.tabs.Tab) => {
@@ -531,18 +746,45 @@ chrome.runtime.onMessage.addListener((message: ExtMessage, sender, sendResponse)
                     }
 
                     const tab = sender.tab;
+                    const headersWithCookies = await buildHeadersWithCookies(
+                        message.url,
+                        message.headers || {}
+                    );
                     const result = await postToNative("add_download", {
                         url: message.url,
                         filename: message.filename,
                         referrer: tab?.url || "",
-                        headers: message.headers || {}
+                        headers: headersWithCookies
                     });
 
-                    sendResponse({
-                        success: result.success,
-                        error: result.error,
-                        requestId: result.requestId || requestId
+                    if (result.success) {
+                        sendResponse({
+                            success: true,
+                            error: result.error,
+                            requestId: result.requestId || requestId
+                        });
+                        return;
+                    }
+
+                    // FALLBACK: Use chrome.downloads API if NativeHost fails
+                    appendDebugLog("info", "download.fallback_chrome", {
+                        requestId,
+                        url: (message.url as string).substring(0, 100),
+                        nativeError: result.error
                     });
+                    try {
+                        const downloadId = await chromeDownloadFallback(
+                            message.url as string,
+                            message.filename as string | undefined
+                        );
+                        sendResponse({ success: true, requestId, downloadId });
+                    } catch (dlErr) {
+                        sendResponse({
+                            success: false,
+                            error: `Download failed: ${safeString(dlErr)}`,
+                            requestId
+                        });
+                    }
                     return;
                 }
                 case "download_media": {
@@ -552,13 +794,17 @@ chrome.runtime.onMessage.addListener((message: ExtMessage, sender, sendResponse)
                     }
 
                     const tab = sender.tab;
+                    const mediaHeaders = await buildHeadersWithCookies(
+                        message.manifestUrl,
+                        message.headers || {}
+                    );
                     const result = await postToNative("add_media_download", {
                         manifestUrl: message.manifestUrl,
                         mediaType: message.mediaType || "hls",
                         quality: message.quality,
                         title: message.title || tab?.title || "",
                         referrer: tab?.url || "",
-                        headers: message.headers || {}
+                        headers: mediaHeaders
                     });
 
                     sendResponse({
@@ -566,6 +812,57 @@ chrome.runtime.onMessage.addListener((message: ExtMessage, sender, sendResponse)
                         error: result.error,
                         requestId: result.requestId || requestId
                     });
+                    return;
+                }
+                case "download_video": {
+                    if (!message.videoUrl) {
+                        sendResponse({ success: false, error: "Missing videoUrl", requestId });
+                        return;
+                    }
+
+                    const tab = sender.tab;
+                    const videoHeaders = await buildHeadersWithCookies(
+                        message.videoUrl,
+                        message.headers || {}
+                    );
+                    const result = await postToNative("add_video_download", {
+                        videoUrl: message.videoUrl,
+                        audioUrl: message.audioUrl || "",
+                        filename: message.filename,
+                        quality: message.quality,
+                        title: message.title || tab?.title || "",
+                        referrer: tab?.url || "",
+                        headers: videoHeaders
+                    });
+
+                    if (result.success) {
+                        sendResponse({
+                            success: true,
+                            error: result.error,
+                            requestId: result.requestId || requestId
+                        });
+                        return;
+                    }
+
+                    // FALLBACK: Use chrome.downloads API if NativeHost fails
+                    appendDebugLog("info", "download_video.fallback_chrome", {
+                        requestId,
+                        videoUrl: (message.videoUrl as string).substring(0, 100),
+                        nativeError: result.error
+                    });
+                    try {
+                        const downloadId = await chromeDownloadFallback(
+                            message.videoUrl as string,
+                            message.filename as string | undefined
+                        );
+                        sendResponse({ success: true, requestId, downloadId });
+                    } catch (dlErr) {
+                        sendResponse({
+                            success: false,
+                            error: `Download failed: ${safeString(dlErr)}`,
+                            requestId
+                        });
+                    }
                     return;
                 }
                 case "get_connection_status": {
@@ -596,11 +893,21 @@ chrome.runtime.onMessage.addListener((message: ExtMessage, sender, sendResponse)
                         return;
                     }
 
+                    // If the resolved stream is not muxed, also find the best audio stream
+                    let audioUrl = "";
+                    if (!resolved.muxed && resolved.hasVideo) {
+                        const audio = resolveBestAudioCandidate(tabId, pageUrl);
+                        if (audio) {
+                            audioUrl = audio.url;
+                        }
+                    }
+
                     appendDebugLog("info", "stream.resolved", {
                         requestId,
                         tabId,
                         pageUrl,
                         url: resolved.url,
+                        audioUrl: audioUrl || undefined,
                         itag: resolved.itag,
                         quality: resolved.qualityLabel,
                         muxed: resolved.muxed
@@ -610,10 +917,76 @@ chrome.runtime.onMessage.addListener((message: ExtMessage, sender, sendResponse)
                         success: true,
                         requestId,
                         url: resolved.url,
+                        audioUrl,
                         quality: resolved.qualityLabel || "",
                         mimeType: resolved.mimeType || "",
                         muxed: resolved.muxed
                     });
+                    return;
+                }
+                case "list_stream_qualities": {
+                    const tabId = sender.tab?.id;
+                    if (typeof tabId !== "number") {
+                        sendResponse({ success: false, error: "No tab context", requestId });
+                        return;
+                    }
+
+                    const pageUrl = message.pageUrl || sender.tab?.url || "";
+                    const allCandidates = tabStreamCandidates.get(tabId) || [];
+                    const candidates = filterCandidatesForPage(allCandidates, pageUrl);
+
+                    // Build list of unique video qualities + audio
+                    const seenQualities = new Set<string>();
+                    const qualities: Array<{
+                        url: string;
+                        audioUrl: string;
+                        itag: number | undefined;
+                        quality: string;
+                        mimeType: string;
+                        muxed: boolean;
+                        height: number;
+                        hasVideo: boolean;
+                        hasAudio: boolean;
+                    }> = [];
+
+                    // Sort: muxed first, then by height descending
+                    const sorted = [...candidates].sort((a, b) => {
+                        if (a.muxed !== b.muxed) return a.muxed ? -1 : 1;
+                        return b.height - a.height;
+                    });
+
+                    for (const c of sorted) {
+                        if (!c.hasVideo) continue; // skip audio-only for the main list
+                        const key = `${c.qualityLabel || c.height}-${c.muxed ? "m" : "s"}`;
+                        if (seenQualities.has(key)) continue;
+                        seenQualities.add(key);
+
+                        let audioUrl = "";
+                        if (!c.muxed) {
+                            const audio = resolveBestAudioCandidate(tabId, pageUrl);
+                            if (audio) audioUrl = audio.url;
+                        }
+
+                        qualities.push({
+                            url: c.url,
+                            audioUrl,
+                            itag: c.itag,
+                            quality: c.qualityLabel || `${c.height}p`,
+                            mimeType: c.mimeType || "",
+                            muxed: c.muxed,
+                            height: c.height,
+                            hasVideo: c.hasVideo,
+                            hasAudio: c.hasAudio
+                        });
+                    }
+
+                    appendDebugLog("info", "stream.list_qualities", {
+                        tabId,
+                        count: qualities.length,
+                        qualities: qualities.map((q) => q.quality)
+                    });
+
+                    sendResponse({ success: true, requestId, qualities });
                     return;
                 }
                 case "detected_media": {
@@ -645,6 +1018,33 @@ chrome.runtime.onMessage.addListener((message: ExtMessage, sender, sendResponse)
                     sendResponse({ success: true, requestId, count: resources.length });
                     return;
                 }
+                case "report_stream_url": {
+                    // Receive stream URLs captured by the MAIN world inject script
+                    const reportedUrl = message.url;
+                    const reportTabId = sender.tab?.id;
+                    if (typeof reportedUrl === "string" && typeof reportTabId === "number") {
+                        const candidate = buildStreamCandidate(reportedUrl, reportTabId);
+                        if (candidate) {
+                            rememberStreamCandidate(candidate);
+                            appendDebugLog("info", "stream.accepted", {
+                                tabId: reportTabId,
+                                url: reportedUrl.substring(0, 100),
+                                itag: candidate.itag,
+                                quality: candidate.qualityLabel,
+                                muxed: candidate.muxed,
+                                hasVideo: candidate.hasVideo,
+                                hasAudio: candidate.hasAudio
+                            });
+                        } else {
+                            appendDebugLog("warn", "stream.rejected_by_filter", {
+                                tabId: reportTabId,
+                                url: reportedUrl.substring(0, 120)
+                            });
+                        }
+                    }
+                    sendResponse({ success: true, requestId });
+                    return;
+                }
                 default: {
                     sendResponse({ success: false, error: `Unsupported message type: ${message.type}`, requestId });
                     return;
@@ -662,9 +1062,30 @@ chrome.runtime.onMessage.addListener((message: ExtMessage, sender, sendResponse)
 });
 
 if (chrome.webRequest) {
+    // Capture Content-Type headers from responses to detect media streams
+    chrome.webRequest.onHeadersReceived.addListener(
+        (details) => {
+            if (!details.responseHeaders) return undefined;
+            for (const header of details.responseHeaders) {
+                if (header.name.toLowerCase() === "content-type" && header.value) {
+                    const ct = header.value.toLowerCase();
+                    if (MEDIA_CONTENT_TYPES.some((prefix) => ct.startsWith(prefix))) {
+                        responseContentTypes.set(details.requestId, header.value);
+                    }
+                    break;
+                }
+            }
+            return undefined;
+        },
+        { urls: ["<all_urls>"], types: ["xmlhttprequest", "media", "other"] },
+        ["responseHeaders"]
+    );
+
     chrome.webRequest.onCompleted.addListener(
         (details) => {
             const url = details.url.toLowerCase();
+            const contentType = responseContentTypes.get(details.requestId);
+            responseContentTypes.delete(details.requestId);
 
             if (url.includes(".m3u8") || url.includes(".mpd")) {
                 const mediaType = url.includes(".m3u8") ? "hls" : "dash";
@@ -683,7 +1104,7 @@ if (chrome.webRequest) {
                 });
             }
 
-            const candidate = buildStreamCandidate(details.url, details.tabId);
+            const candidate = buildStreamCandidate(details.url, details.tabId, contentType);
             if (candidate) {
                 rememberStreamCandidate(candidate);
                 if (candidate.hasVideo) {

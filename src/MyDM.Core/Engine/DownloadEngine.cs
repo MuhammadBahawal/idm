@@ -45,7 +45,9 @@ public class DownloadEngine : IDisposable
         {
             Timeout = TimeSpan.FromMinutes(30)
         };
-        _httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("MyDM/1.0");
+        // CRITICAL: Use a real browser User-Agent. googlevideo.com returns 403 for non-browser UAs.
+    _httpClient.DefaultRequestHeaders.UserAgent.ParseAdd(
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36");
 
         _segmentDownloader = new SegmentDownloader(_httpClient, _speedLimiter);
     }
@@ -77,7 +79,7 @@ public class DownloadEngine : IDisposable
         // Probe the URL for file info.
         try
         {
-            var info = await ProbeUrlAsync(url, requestHeaders);
+            var info = await ProbeUrlAsync(url, AutoInjectYouTubeHeaders(url, requestHeaders));
             if (info.ContentLength > 0) item.TotalSize = info.ContentLength;
             if (!string.IsNullOrEmpty(info.FileName)) item.FileName = UrlHelper.SanitizeFileName(info.FileName);
             if (!string.IsNullOrEmpty(info.ContentType))
@@ -95,9 +97,11 @@ public class DownloadEngine : IDisposable
         FileHelper.EnsureDirectory(item.SavePath);
         _repository.Insert(item);
         _downloadCache[item.Id] = item;
-        if (requestHeaders != null && requestHeaders.Count > 0)
+        // Auto-inject YouTube/googlevideo headers (Referer + Origin) if needed
+        var finalHeaders = AutoInjectYouTubeHeaders(url, requestHeaders);
+        if (finalHeaders != null && finalHeaders.Count > 0)
         {
-            _requestHeaders[item.Id] = new Dictionary<string, string>(requestHeaders, StringComparer.OrdinalIgnoreCase);
+            _requestHeaders[item.Id] = new Dictionary<string, string>(finalHeaders, StringComparer.OrdinalIgnoreCase);
         }
         if (!string.IsNullOrEmpty(probeWarning))
         {
@@ -512,6 +516,37 @@ public class DownloadEngine : IDisposable
         return _requestHeaders.TryGetValue(downloadId, out var headers) ? headers : null;
     }
 
+    /// <summary>
+    /// Automatically inject Referer and Origin headers for googlevideo.com URLs.
+    /// These headers are REQUIRED — without them, YouTube returns 403 Forbidden.
+    /// </summary>
+    private static IReadOnlyDictionary<string, string>? AutoInjectYouTubeHeaders(
+        string url, IReadOnlyDictionary<string, string>? existing)
+    {
+        try
+        {
+            var host = new Uri(url).Host.ToLowerInvariant();
+            if (!host.Contains("googlevideo.com") && !host.Contains("youtube.com"))
+                return existing;
+        }
+        catch
+        {
+            return existing;
+        }
+
+        var headers = existing != null
+            ? new Dictionary<string, string>(existing, StringComparer.OrdinalIgnoreCase)
+            : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        if (!headers.ContainsKey("Referer"))
+            headers["Referer"] = "https://www.youtube.com/";
+
+        if (!headers.ContainsKey("Origin"))
+            headers["Origin"] = "https://www.youtube.com";
+
+        return headers;
+    }
+
     private static void ApplyHeaders(HttpRequestMessage request, IReadOnlyDictionary<string, string>? headers)
     {
         if (headers == null || headers.Count == 0) return;
@@ -528,6 +563,12 @@ public class DownloadEngine : IDisposable
                 {
                     request.Headers.Referrer = refUri;
                 }
+                continue;
+            }
+
+            if (string.Equals(key, "Origin", StringComparison.OrdinalIgnoreCase))
+            {
+                request.Headers.TryAddWithoutValidation("Origin", value);
                 continue;
             }
 

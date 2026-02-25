@@ -12,6 +12,7 @@ interface RuntimeResponse {
     disconnectReason?: string;
     requestId?: string;
     url?: string;
+    audioUrl?: string;
     quality?: string;
     mimeType?: string;
     muxed?: boolean;
@@ -530,27 +531,72 @@ function injectVideoOverlay(video: HTMLVideoElement): void {
         event.stopPropagation();
         event.preventDefault();
 
+        // Log connection status but DON'T block — chrome.downloads fallback works without NativeHost
+        try {
+            const status = await sendRuntimeMessage<RuntimeResponse>({ type: "get_connection_status" });
+            if (!status?.connected) {
+                log("info", "native_host_not_connected_using_fallback", {
+                    reason: status?.disconnectReason || "MyDM desktop app is not running"
+                });
+            }
+        } catch (err) {
+            log("warn", "connection_precheck_failed", { error: String(err) });
+        }
+
         let url = getMediaUrl(video);
         let resolvedQuality: string | undefined;
         let resolvedMimeType: string | undefined;
+        let resolvedMuxed = true;
+        let resolvedAudioUrl: string | undefined;
+
+        log("info", "download_button_clicked", {
+            rawUrl: url,
+            isHttp: isHttpUrl(url),
+            pageUrl: location.href
+        });
 
         if (!isHttpUrl(url)) {
-            const fallback = await resolveFallbackVideoSource();
+            showNotification("🔍 Finding downloadable stream…");
+
+            // Ask inject.ts (MAIN world) to re-scan and re-broadcast URLs NOW
+            try {
+                document.dispatchEvent(new CustomEvent("mydm-request-scan"));
+            } catch { /* ignore */ }
+
+            // Small delay to let re-broadcast messages arrive
+            await new Promise((r) => setTimeout(r, 500));
+            let fallback = await resolveFallbackVideoSource();
+
+            // RETRY: If first attempt fails, wait 3s and try again.
+            if (!fallback?.url || !isHttpUrl(fallback.url)) {
+                log("info", "first_resolve_failed_retrying", { pageUrl: location.href });
+                await new Promise((r) => setTimeout(r, 3000));
+                fallback = await resolveFallbackVideoSource();
+            }
+
             if (fallback?.url && isHttpUrl(fallback.url)) {
                 url = fallback.url;
                 resolvedQuality = fallback.quality || undefined;
                 resolvedMimeType = fallback.mimeType || undefined;
+                resolvedMuxed = fallback.muxed ?? true;
+                resolvedAudioUrl = fallback.audioUrl || undefined;
                 log("info", "fallback_video_source_resolved", {
                     url,
+                    audioUrl: resolvedAudioUrl,
                     quality: resolvedQuality,
                     mimeType: resolvedMimeType,
-                    muxed: fallback.muxed ?? null
+                    muxed: resolvedMuxed
+                });
+            } else {
+                log("warn", "fallback_resolution_failed", {
+                    fallbackError: fallback?.error || "no result",
+                    pageUrl: location.href
                 });
             }
         }
 
         if (!isHttpUrl(url)) {
-            showNotification("⚠ No downloadable source found", true);
+            showNotification("⚠ No downloadable stream found. Let the video play for a few seconds, then try again.", true);
             return;
         }
 
@@ -562,12 +608,26 @@ function injectVideoOverlay(video: HTMLVideoElement): void {
 
         const extension = inferExtensionFromUrl(url) || inferExtensionFromMime(resolvedMimeType);
         const qualitySuffix = resolvedQuality ? `_${sanitizeFileName(resolvedQuality).replace(/\s+/g, "")}` : "";
+        const filename = `${sanitizeFileName(document.title || "video")}${qualitySuffix}.${extension}`;
 
-        const ok = await sendDownloadToBackground({
-            type: "download_with_mydm",
-            url,
-            filename: `${sanitizeFileName(document.title || "video")}${qualitySuffix}.${extension}`
-        });
+        let ok: boolean;
+        if (!resolvedMuxed && resolvedAudioUrl) {
+            // Split video+audio streams — use download_video so NativeHost can mux them
+            ok = await sendDownloadToBackground({
+                type: "download_video",
+                videoUrl: url,
+                audioUrl: resolvedAudioUrl,
+                filename,
+                quality: resolvedQuality || ""
+            });
+        } else {
+            // Muxed stream or direct video — simple download
+            ok = await sendDownloadToBackground({
+                type: "download_with_mydm",
+                url,
+                filename
+            });
+        }
 
         if (ok) {
             const qualityText = resolvedQuality ? ` (${resolvedQuality})` : "";
@@ -747,37 +807,69 @@ function installMutationObserver(): void {
     });
 }
 
+// Manifest detection — only checks DOM attributes, NOT network interception.
+// Network interception is handled exclusively by inject.ts in the MAIN world.
 function installManifestRequestHooks(): void {
-    const reportManifest = (url: string) => {
+    // Check existing source elements for manifests
+    const reportIfManifest = (url: string) => {
         if (!url.includes(".m3u8") && !url.includes(".mpd")) return;
         void sendRuntimeMessage<RuntimeResponse>({
             type: "detected_media",
             url,
             mediaType: url.includes(".m3u8") ? "hls" : "dash",
             requestId: genRequestId("manifest")
-        }).catch((error) => {
-            log("warn", "detected_media_send_failed", { url, error: String(error) });
-        });
+        }).catch(() => { });
     };
 
-    const originalXhrOpen = XMLHttpRequest.prototype.open;
-    XMLHttpRequest.prototype.open = function (
-        this: XMLHttpRequest,
-        method: string,
-        url: string | URL,
-        async?: boolean,
-        username?: string | null,
-        password?: string | null
-    ): void {
-        reportManifest(url.toString());
-        originalXhrOpen.call(this, method, url, async ?? true, username, password);
-    };
+    // Scan existing video/audio source elements
+    document.querySelectorAll("source[src], video[src], audio[src]").forEach((el) => {
+        const src = el.getAttribute("src");
+        if (src) reportIfManifest(src);
+    });
+}
 
-    const originalFetch = window.fetch;
-    window.fetch = function (input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
-        reportManifest(input.toString());
-        return originalFetch.call(this, input, init);
-    };
+// ──── MAIN world stream URL relay ────
+// The inject.ts script (running in the page's MAIN world) sends captured
+// googlevideo.com / media URLs via window.postMessage. We listen here
+// (in the ISOLATED world) and forward them to the background service worker.
+function installMainWorldRelay(): void {
+    // Handle real-time URL messages from inject.ts
+    window.addEventListener("message", (event) => {
+        if (event.source !== window) return;
+        if (event.data?.type !== "MYDM_STREAM_INTERCEPT") return;
+        const url = event.data.url;
+        if (typeof url !== "string" || !url.startsWith("http")) return;
+
+        log("info", "main_world_stream_intercepted", { url: url.substring(0, 120) });
+
+        // Forward to background so it can build a stream candidate
+        sendRuntimeMessage({
+            type: "report_stream_url",
+            url,
+            pageUrl: location.href
+        }).catch(() => { /* background might not be ready yet */ });
+    });
+
+    // CRITICAL: Read URLs that inject.ts already captured BEFORE this script loaded.
+    // inject.ts runs at document_start, this script runs at document_idle.
+    // The postMessage events fired by inject.ts are already lost by now.
+    // But inject.ts stores all captured URLs in a DOM data attribute.
+    try {
+        const stored = document.documentElement.dataset.mydmStreams;
+        if (stored) {
+            const urls: string[] = JSON.parse(stored);
+            log("info", "reading_pre_captured_urls", { count: urls.length });
+            for (const url of urls) {
+                if (typeof url === "string" && url.startsWith("http")) {
+                    sendRuntimeMessage({
+                        type: "report_stream_url",
+                        url,
+                        pageUrl: location.href
+                    }).catch(() => { });
+                }
+            }
+        }
+    } catch { /* ignore parse errors */ }
 }
 
 function bootstrap(): void {
@@ -786,6 +878,7 @@ function bootstrap(): void {
     installMutationObserver();
     installNavigationHooks();
     installManifestRequestHooks();
+    installMainWorldRelay();
 
     setInterval(() => {
         cleanupStaleOverlays();

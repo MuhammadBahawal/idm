@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using MyDM.Core.Data;
 using MyDM.Core.Engine;
+using MyDM.Core.Media;
 using MyDM.Core.Models;
 using MyDM.Core.Utilities;
 
@@ -16,6 +17,7 @@ internal static class Program
     private static DownloadEngine? _engine;
     private static DownloadRepository? _repository;
     private static MyDMDatabase? _database;
+    private static FfmpegMuxer? _muxer;
     private static readonly SemaphoreSlim _logLock = new(1, 1);
     private static string _logPath = string.Empty;
 
@@ -180,6 +182,7 @@ internal static class Program
             "healthcheck" => Task.FromResult(HandleHealthcheck(requestId)),
             "add_download" => HandleAddDownloadAsync(message, requestId),
             "add_media_download" => HandleAddMediaDownloadAsync(message, requestId),
+            "add_video_download" => HandleAddVideoDownloadAsync(message, requestId),
             "get_status" => Task.FromResult(HandleGetStatus(message, requestId)),
             _ => Task.FromResult(AddRequestId(new NativeMessage
             {
@@ -286,17 +289,14 @@ internal static class Program
         }
 
         var manifestPath = manifestUrl.ToLowerInvariant();
-        if (manifestPath.Contains(".m3u8") || manifestPath.Contains(".mpd"))
+        var isManifest = manifestPath.Contains(".m3u8") || manifestPath.Contains(".mpd");
+        if (isManifest)
         {
-            return AddRequestId(new NativeMessage
+            await LogAsync("warn", "media.manifest_direct_download", requestId, new
             {
-                Type = "error",
-                Payload = new Dictionary<string, object>
-                {
-                    { "message", "HLS/DASH manifest download pipeline is not enabled in desktop engine yet. Use a direct media URL when available." },
-                    { "code", "MEDIA_PIPELINE_NOT_IMPLEMENTED" }
-                }
-            }, requestId);
+                manifestUrl,
+                note = "HLS/DASH manifest pipeline not implemented. Attempting direct download of the URL."
+            });
         }
 
         try
@@ -350,6 +350,225 @@ internal static class Program
                 {
                     { "message", ex.Message },
                     { "code", "ADD_MEDIA_FAILED" }
+                }
+            }, requestId);
+        }
+    }
+
+    private static async Task<NativeMessage> HandleAddVideoDownloadAsync(NativeMessage message, string requestId)
+    {
+        var videoUrl = GetPayloadString(message, "videoUrl");
+        var audioUrl = GetPayloadString(message, "audioUrl");
+        var fileName = GetPayloadString(message, "filename");
+        var title = GetPayloadString(message, "title");
+        var quality = GetPayloadString(message, "quality");
+        var headers = BuildRequestHeaders(message);
+
+        if (string.IsNullOrWhiteSpace(videoUrl) || !UrlHelper.IsValidUrl(videoUrl))
+        {
+            return AddRequestId(new NativeMessage
+            {
+                Type = "error",
+                Payload = new Dictionary<string, object>
+                {
+                    { "message", "Invalid or missing video URL" },
+                    { "code", "INVALID_VIDEO_URL" }
+                }
+            }, requestId);
+        }
+
+        // Determine final file name
+        var baseName = !string.IsNullOrWhiteSpace(fileName)
+            ? fileName
+            : !string.IsNullOrWhiteSpace(title)
+                ? UrlHelper.SanitizeFileName(title) + ".mp4"
+                : UrlHelper.ExtractFileName(videoUrl);
+
+        // Ensure .mp4 extension for muxed output
+        if (!string.IsNullOrWhiteSpace(audioUrl) && !baseName.EndsWith(".mp4", StringComparison.OrdinalIgnoreCase))
+        {
+            baseName = Path.ChangeExtension(baseName, ".mp4");
+        }
+
+        try
+        {
+            var needsMux = !string.IsNullOrWhiteSpace(audioUrl) && UrlHelper.IsValidUrl(audioUrl!);
+
+            if (!needsMux)
+            {
+                // Simple case: muxed stream or no audio — just download directly
+                var item = await _engine!.AddDownloadAsync(
+                    videoUrl,
+                    fileName: baseName,
+                    category: "Video",
+                    requestHeaders: headers);
+
+                await _engine.StartDownloadAsync(item.Id);
+
+                await LogAsync("info", "video.download.added", requestId, new
+                {
+                    downloadId = item.Id,
+                    item.FileName,
+                    quality,
+                    muxed = true
+                });
+
+                return AddRequestId(new NativeMessage
+                {
+                    Type = "download_added",
+                    Payload = new Dictionary<string, object>
+                    {
+                        { "downloadId", item.Id },
+                        { "fileName", item.FileName },
+                        { "quality", quality ?? string.Empty },
+                        { "status", item.Status.ToString() }
+                    }
+                }, requestId);
+            }
+
+            // Split streams: download video + audio in parallel, then mux
+            await LogAsync("info", "video.download.split_start", requestId, new
+            {
+                videoUrl,
+                audioUrl,
+                quality,
+                fileName = baseName
+            });
+
+            var videoItem = await _engine!.AddDownloadAsync(
+                videoUrl,
+                fileName: "_video_" + baseName,
+                category: "Video",
+                requestHeaders: headers);
+
+            var audioItem = await _engine.AddDownloadAsync(
+                audioUrl!,
+                fileName: "_audio_" + baseName,
+                category: "Video",
+                requestHeaders: headers);
+
+            // Start both downloads
+            var videoTask = _engine.StartDownloadAsync(videoItem.Id);
+            var audioTask = _engine.StartDownloadAsync(audioItem.Id);
+            await Task.WhenAll(videoTask, audioTask);
+
+            // Wait for both to complete (poll status)
+            var maxWaitMs = 600_000; // 10 minutes max
+            var pollMs = 1000;
+            var elapsed = 0;
+
+            while (elapsed < maxWaitMs)
+            {
+                await Task.Delay(pollMs);
+                elapsed += pollMs;
+
+                var v = _repository!.GetById(videoItem.Id);
+                var a = _repository.GetById(audioItem.Id);
+
+                if (v?.Status == DownloadStatus.Error || a?.Status == DownloadStatus.Error)
+                {
+                    var failedPart = v?.Status == DownloadStatus.Error ? "video" : "audio";
+                    var errorMsg = v?.Status == DownloadStatus.Error ? v.ErrorMessage : a?.ErrorMessage;
+                    throw new Exception($"Failed to download {failedPart} stream: {errorMsg}");
+                }
+
+                if (v?.Status == DownloadStatus.Complete && a?.Status == DownloadStatus.Complete)
+                    break;
+            }
+
+            var videoFinal = _repository!.GetById(videoItem.Id);
+            var audioFinal = _repository.GetById(audioItem.Id);
+
+            if (videoFinal?.Status != DownloadStatus.Complete || audioFinal?.Status != DownloadStatus.Complete)
+            {
+                throw new Exception("Download timed out before both streams completed");
+            }
+
+            var videoPath = videoFinal.SavePath;
+            var audioPath = audioFinal.SavePath;
+            var outputDir = Path.GetDirectoryName(videoPath) ?? Environment.GetFolderPath(Environment.SpecialFolder.MyVideos);
+            var outputPath = Path.Combine(outputDir, baseName);
+
+            // Mux with ffmpeg
+            await LogAsync("info", "video.mux.start", requestId, new { videoPath, audioPath, outputPath });
+
+            var muxSuccess = false;
+            if (_muxer == null) _muxer = new FfmpegMuxer();
+
+            if (_muxer.IsAvailable)
+            {
+                muxSuccess = await _muxer.MuxAsync(videoPath, audioPath, outputPath);
+            }
+
+            if (muxSuccess)
+            {
+                // Clean up temp files
+                try { File.Delete(videoPath); } catch { /* ignore */ }
+                try { File.Delete(audioPath); } catch { /* ignore */ }
+                _repository.Delete(videoItem.Id);
+                _repository.Delete(audioItem.Id);
+
+                await LogAsync("info", "video.mux.complete", requestId, new
+                {
+                    outputPath,
+                    quality
+                });
+
+                return AddRequestId(new NativeMessage
+                {
+                    Type = "download_added",
+                    Payload = new Dictionary<string, object>
+                    {
+                        { "downloadId", videoItem.Id },
+                        { "fileName", baseName },
+                        { "quality", quality ?? string.Empty },
+                        { "status", "Complete" },
+                        { "muxed", true },
+                        { "outputPath", outputPath }
+                    }
+                }, requestId);
+            }
+            else
+            {
+                await LogAsync("warn", "video.mux.failed", requestId, new
+                {
+                    videoPath,
+                    audioPath,
+                    note = "ffmpeg not found or mux failed. Video file saved without audio."
+                });
+
+                return AddRequestId(new NativeMessage
+                {
+                    Type = "download_added",
+                    Payload = new Dictionary<string, object>
+                    {
+                        { "downloadId", videoItem.Id },
+                        { "fileName", videoFinal.FileName },
+                        { "quality", quality ?? string.Empty },
+                        { "status", "Complete" },
+                        { "muxed", false },
+                        { "warning", "ffmpeg not available. Video saved without audio. Install ffmpeg and add to PATH for automatic muxing." }
+                    }
+                }, requestId);
+            }
+        }
+        catch (Exception ex)
+        {
+            await LogAsync("error", "video.download.failed", requestId, new
+            {
+                videoUrl,
+                audioUrl,
+                exception = ex.GetType().Name,
+                ex.Message
+            });
+
+            return AddRequestId(new NativeMessage
+            {
+                Type = "error",
+                Payload = new Dictionary<string, object>
+                {
+                    { "message", ex.Message },
+                    { "code", "ADD_VIDEO_DOWNLOAD_FAILED" }
                 }
             }, requestId);
         }

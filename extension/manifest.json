@@ -9,7 +9,10 @@
     "tabs",
     "nativeMessaging",
     "storage",
-    "webRequest"
+    "webRequest",
+    "cookies",
+    "downloads",
+    "declarativeNetRequest"
   ],
   "host_permissions": [
     "<all_urls>"
@@ -30,6 +33,16 @@
         "dist/overlay.css"
       ],
       "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "dist/inject.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN"
     }
   ],
   "action": {
