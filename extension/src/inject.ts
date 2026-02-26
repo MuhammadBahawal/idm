@@ -19,24 +19,25 @@
 (function () {
     "use strict";
     const MSG_TYPE = "MYDM_STREAM_INTERCEPT";
-    const sentUrls = new Set<string>();
+    const capturedUrls = new Map<string, string>();
     let totalCaptured = 0;
 
     function report(url: string, source?: string): void {
         if (!url || typeof url !== "string") return;
-        if (sentUrls.has(url)) return;
-        sentUrls.add(url);
+        if (capturedUrls.has(url)) return;
+        const normalizedSource = (source || "unknown").toLowerCase();
+        capturedUrls.set(url, normalizedSource);
         totalCaptured++;
 
-        // Cap set size to prevent memory leaks on very long sessions
-        if (sentUrls.size > 1000) {
-            const toDelete = [...sentUrls].slice(0, 500);
-            toDelete.forEach((u) => sentUrls.delete(u));
+        // Cap map size to prevent memory leaks on very long sessions
+        if (capturedUrls.size > 1000) {
+            const toDelete = [...capturedUrls.keys()].slice(0, 500);
+            toDelete.forEach((u) => capturedUrls.delete(u));
         }
 
         try {
             console.log(`[MyDM] 📡 Captured stream (${source || "unknown"}):`, url.substring(0, 120));
-            window.postMessage({ type: MSG_TYPE, url }, "*");
+            window.postMessage({ type: MSG_TYPE, url, source: normalizedSource }, "*");
         } catch { /* ignore */ }
 
         // CRITICAL: Also store in DOM so content.ts (ISOLATED world) can read
@@ -47,17 +48,22 @@
 
     function persistUrlsToDom(): void {
         try {
-            document.documentElement.dataset.mydmStreams = JSON.stringify([...sentUrls]);
+            const payload = [...capturedUrls.entries()].map(([streamUrl, streamSource]) => ({
+                url: streamUrl,
+                source: streamSource
+            }));
+            document.documentElement.dataset.mydmStreams = JSON.stringify(payload);
         } catch { /* ignore */ }
     }
 
     // Re-broadcast ALL captured URLs via postMessage (called on demand by content.ts)
     function rebroadcastAll(): void {
-        const urls = [...sentUrls];
+        const entries = [...capturedUrls.entries()];
+        const urls = entries;
         console.log(`[MyDM] 🔁 Re-broadcasting ${urls.length} captured URLs`);
-        for (const url of urls) {
+        for (const [url, source] of entries) {
             try {
-                window.postMessage({ type: MSG_TYPE, url }, "*");
+                window.postMessage({ type: MSG_TYPE, url, source }, "*");
             } catch { /* ignore */ }
         }
     }
@@ -138,12 +144,17 @@
                 const params = new URLSearchParams(cipher);
                 const url = params.get("url");
                 const sp = params.get("sp") || "signature";
-                const sig = params.get("s");
-                if (url && sig) {
+                const signed = params.get("sig") || params.get("signature");
+                const undeciphered = params.get("s");
+                if (!url) return null;
+                if (signed) {
                     // Try to append the signature — may work for some videos
-                    return `${url}&${sp}=${encodeURIComponent(sig)}`;
+                    return `${url}&${sp}=${encodeURIComponent(signed)}`;
                 }
-                return url || null;
+                if (undeciphered) {
+                    return null;
+                }
+                return url;
             } catch {
                 return null;
             }
@@ -281,7 +292,7 @@
     document.addEventListener("yt-navigate-finish", () => {
         console.log("[MyDM] 🔄 YouTube SPA navigation detected (yt-navigate-finish)");
         // Clear previously sent URLs for the new page
-        sentUrls.clear();
+        capturedUrls.clear();
         totalCaptured = 0;
         // Schedule scans with increasing delays
         setTimeout(scanForPlayerResponse, 500);

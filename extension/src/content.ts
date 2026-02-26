@@ -16,6 +16,18 @@ interface RuntimeResponse {
     quality?: string;
     mimeType?: string;
     muxed?: boolean;
+    qualities?: StreamQualityOption[];
+}
+
+interface StreamQualityOption {
+    url: string;
+    audioUrl: string;
+    quality: string;
+    mimeType: string;
+    muxed: boolean;
+    height: number;
+    hasVideo: boolean;
+    hasAudio: boolean;
 }
 
 interface OverlayController {
@@ -31,14 +43,31 @@ interface OverlayController {
     cleanup: () => void;
 }
 
+interface ImageOverlayController {
+    image: HTMLImageElement;
+    host: HTMLDivElement;
+    button: HTMLButtonElement;
+    hideTimer: ReturnType<typeof setTimeout> | null;
+    rafHandle: number | null;
+    pointerOnImage: boolean;
+    pointerOnButton: boolean;
+    visible: boolean;
+    resizeObserver: ResizeObserver | null;
+    cleanup: () => void;
+}
+
 const OVERLAY_Z_INDEX = 2147483647;
 const HIDE_DELAY_MS = 550;
 const MESSAGE_TIMEOUT_MS = 10000;
 const MAX_RESOURCE_REPORT = 120;
+const MIN_IMAGE_OVERLAY_WIDTH = 90;
+const MIN_IMAGE_OVERLAY_HEIGHT = 70;
 const DOWNLOADABLE_EXT_REGEX = /\.(zip|rar|7z|tar|gz|bz2|xz|iso|exe|msi|dmg|deb|rpm|apk|pdf|docx?|xlsx?|pptx?|txt|csv|mp4|mkv|avi|mov|wmv|flv|webm|m4v|mp3|flac|wav|aac|ogg|wma|m4a|jpe?g|png|gif|bmp|svg|webp)(?:$|[?#])/i;
 
 const overlayByVideo = new WeakMap<HTMLVideoElement, OverlayController>();
 const activeOverlays = new Set<OverlayController>();
+const imageOverlayByElement = new WeakMap<HTMLImageElement, ImageOverlayController>();
+const activeImageOverlays = new Set<ImageOverlayController>();
 const reportedResources = new Set<string>();
 
 let scanTimer: ReturnType<typeof setTimeout> | null = null;
@@ -142,6 +171,25 @@ function inferExtensionFromMime(mimeType?: string): string {
     return "mp4";
 }
 
+function inferFileNameFromUrl(url: string, fallbackBase: string): string {
+    try {
+        const parsed = new URL(url);
+        const raw = parsed.pathname.split("/").pop() || "";
+        const clean = decodeURIComponent(raw).trim();
+        if (clean.length > 0) {
+            return sanitizeFileName(clean);
+        }
+    } catch {
+        // ignore
+    }
+    return sanitizeFileName(fallbackBase);
+}
+
+function isYoutubePage(): boolean {
+    const host = location.hostname.toLowerCase();
+    return host.includes("youtube.com") || host === "youtu.be" || host === "m.youtube.com";
+}
+
 async function resolveFallbackVideoSource(): Promise<RuntimeResponse | null> {
     try {
         const resolved = await sendRuntimeMessage<RuntimeResponse>({
@@ -161,6 +209,101 @@ async function resolveFallbackVideoSource(): Promise<RuntimeResponse | null> {
         log("warn", "resolve_video_source_error", { error: String(error), pageUrl: location.href });
         return null;
     }
+}
+
+async function listStreamQualities(): Promise<StreamQualityOption[]> {
+    try {
+        const response = await sendRuntimeMessage<RuntimeResponse>({
+            type: "list_stream_qualities",
+            requestId: genRequestId("qualities"),
+            pageUrl: location.href
+        });
+        const raw = response.qualities;
+        if (!Array.isArray(raw)) {
+            return [];
+        }
+        return raw.filter((q): q is StreamQualityOption => {
+            return Boolean(
+                q &&
+                typeof q.url === "string" &&
+                typeof q.audioUrl === "string" &&
+                typeof q.quality === "string" &&
+                typeof q.mimeType === "string" &&
+                typeof q.muxed === "boolean"
+            );
+        });
+    } catch (error) {
+        log("warn", "list_stream_qualities_failed", {
+            error: String(error),
+            pageUrl: location.href
+        });
+        return [];
+    }
+}
+
+function pickStreamQuality(qualities: StreamQualityOption[]): Promise<StreamQualityOption | null> {
+    return new Promise((resolve) => {
+        document.querySelector(".mydm-quality-modal")?.remove();
+        document.querySelector(".mydm-modal-backdrop")?.remove();
+
+        const modal = document.createElement("div");
+        modal.className = "mydm-quality-modal";
+
+        const header = document.createElement("div");
+        header.className = "mydm-modal-header";
+        header.innerHTML = "<span>Select Video Quality</span><button class=\"mydm-modal-close\">X</button>";
+        modal.appendChild(header);
+
+        const list = document.createElement("div");
+        list.className = "mydm-quality-list";
+
+        for (const q of qualities) {
+            const qualityLabel = q.quality || (q.height > 0 ? `${q.height}p` : "Auto");
+            const item = document.createElement("button");
+            item.className = "mydm-quality-item";
+            item.innerHTML = `
+                <span class="mydm-q-resolution">${qualityLabel}</span>
+                <span class="mydm-q-bitrate">${q.muxed ? "video+audio" : "video stream"}</span>
+                <span class="mydm-q-codecs">${q.mimeType || "media"}</span>
+            `;
+            item.addEventListener("click", () => {
+                cleanup();
+                resolve(q);
+            });
+            list.appendChild(item);
+        }
+
+        const cancel = document.createElement("button");
+        cancel.className = "mydm-quality-item";
+        cancel.textContent = "Cancel";
+        cancel.addEventListener("click", () => {
+            cleanup();
+            resolve(null);
+        });
+        list.appendChild(cancel);
+
+        modal.appendChild(list);
+
+        const backdrop = document.createElement("div");
+        backdrop.className = "mydm-modal-backdrop";
+
+        const cleanup = () => {
+            modal.remove();
+            backdrop.remove();
+        };
+
+        header.querySelector(".mydm-modal-close")?.addEventListener("click", () => {
+            cleanup();
+            resolve(null);
+        });
+        backdrop.addEventListener("click", () => {
+            cleanup();
+            resolve(null);
+        });
+
+        document.body.appendChild(backdrop);
+        document.body.appendChild(modal);
+    });
 }
 
 function resolveUrl(url: string, baseUrl: string): string {
@@ -600,6 +743,22 @@ function injectVideoOverlay(video: HTMLVideoElement): void {
             return;
         }
 
+        if (isYoutubePage() || url.includes("googlevideo.com")) {
+            const qualities = await listStreamQualities();
+            if (qualities.length > 0) {
+                const selected = qualities.length === 1 ? qualities[0] : await pickStreamQuality(qualities);
+                if (!selected) {
+                    showNotification("Download cancelled", true);
+                    return;
+                }
+                url = selected.url;
+                resolvedAudioUrl = selected.audioUrl || undefined;
+                resolvedMuxed = selected.muxed;
+                resolvedQuality = selected.quality || resolvedQuality;
+                resolvedMimeType = selected.mimeType || resolvedMimeType;
+            }
+        }
+
         const isManifest = url.includes(".m3u8") || url.includes(".mpd");
         if (isManifest) {
             await showQualityModal(url, url.includes(".m3u8") ? "hls" : "dash");
@@ -658,9 +817,230 @@ function injectVideoOverlay(video: HTMLVideoElement): void {
     updateOverlayPosition(controller);
 }
 
+function getImageDownloadUrl(image: HTMLImageElement): string | null {
+    const raw = image.currentSrc || image.src || image.getAttribute("src");
+    if (!raw) return null;
+    const absolute = resolveUrl(raw, location.href);
+    if (!isHttpUrl(absolute)) return null;
+    if (absolute.startsWith("blob:") || absolute.startsWith("data:")) return null;
+    return absolute;
+}
+
+function injectImageOverlay(image: HTMLImageElement): void {
+    if (imageOverlayByElement.has(image)) return;
+    const initialRect = image.getBoundingClientRect();
+    if (initialRect.width < MIN_IMAGE_OVERLAY_WIDTH || initialRect.height < MIN_IMAGE_OVERLAY_HEIGHT) return;
+
+    const host = document.createElement("div");
+    host.className = "mydm-image-overlay-host";
+    host.style.cssText = [
+        "position:fixed",
+        "left:0",
+        "top:0",
+        "width:0",
+        "height:0",
+        "pointer-events:none",
+        `z-index:${OVERLAY_Z_INDEX}`
+    ].join(";");
+
+    const shadow = host.attachShadow({ mode: "open" });
+    const style = document.createElement("style");
+    style.textContent = `
+        .mydm-img-btn {
+            position: absolute;
+            right: 8px;
+            top: 8px;
+            border: none;
+            border-radius: 6px;
+            padding: 6px 10px;
+            color: #fff;
+            background: linear-gradient(135deg, #1d4ed8, #1e40af);
+            font-size: 11px;
+            font-weight: 600;
+            font-family: 'Segoe UI', system-ui, sans-serif;
+            cursor: pointer;
+            pointer-events: auto;
+            opacity: 0;
+            visibility: hidden;
+            transform: translateY(-2px);
+            transition: opacity 0.2s ease, transform 0.2s ease, visibility 0.2s ease;
+            box-shadow: 0 6px 18px rgba(30, 64, 175, 0.35);
+            white-space: nowrap;
+        }
+        .mydm-img-btn.visible {
+            opacity: 1;
+            visibility: visible;
+            transform: translateY(0);
+        }
+        .mydm-img-btn:hover {
+            background: linear-gradient(135deg, #1e40af, #1e3a8a);
+        }
+    `;
+    shadow.appendChild(style);
+
+    const button = document.createElement("button");
+    button.className = "mydm-img-btn";
+    button.textContent = "Download Image";
+    shadow.appendChild(button);
+
+    document.documentElement.appendChild(host);
+
+    const controller: ImageOverlayController = {
+        image,
+        host,
+        button,
+        hideTimer: null,
+        rafHandle: null,
+        pointerOnImage: false,
+        pointerOnButton: false,
+        visible: false,
+        resizeObserver: null,
+        cleanup: () => { }
+    };
+
+    const updateImageOverlayPosition = () => {
+        if (!image.isConnected) return;
+        const rect = image.getBoundingClientRect();
+        const tooSmall = rect.width < MIN_IMAGE_OVERLAY_WIDTH || rect.height < MIN_IMAGE_OVERLAY_HEIGHT;
+        const offscreen = rect.bottom < 0 || rect.right < 0 || rect.top > window.innerHeight || rect.left > window.innerWidth;
+        if (tooSmall || offscreen) {
+            controller.button.classList.remove("visible");
+            controller.visible = false;
+            return;
+        }
+        controller.host.style.left = `${Math.round(rect.left)}px`;
+        controller.host.style.top = `${Math.round(rect.top)}px`;
+        controller.host.style.width = `${Math.round(rect.width)}px`;
+        controller.host.style.height = `${Math.round(rect.height)}px`;
+    };
+
+    const ensureTracking = () => {
+        if (controller.rafHandle !== null) return;
+        const tick = () => {
+            updateImageOverlayPosition();
+            if (controller.visible || controller.pointerOnButton || controller.pointerOnImage) {
+                controller.rafHandle = requestAnimationFrame(tick);
+            } else {
+                controller.rafHandle = null;
+            }
+        };
+        controller.rafHandle = requestAnimationFrame(tick);
+    };
+
+    const clearHide = () => {
+        if (controller.hideTimer) {
+            clearTimeout(controller.hideTimer);
+            controller.hideTimer = null;
+        }
+    };
+
+    const show = () => {
+        clearHide();
+        controller.visible = true;
+        button.classList.add("visible");
+        updateImageOverlayPosition();
+        ensureTracking();
+    };
+
+    const scheduleHide = () => {
+        clearHide();
+        controller.hideTimer = setTimeout(() => {
+            if (controller.pointerOnImage || controller.pointerOnButton) return;
+            controller.visible = false;
+            button.classList.remove("visible");
+        }, HIDE_DELAY_MS);
+    };
+
+    const onImageEnter = () => {
+        controller.pointerOnImage = true;
+        show();
+    };
+    const onImageMove = () => show();
+    const onImageLeave = () => {
+        controller.pointerOnImage = false;
+        scheduleHide();
+    };
+    const onButtonEnter = () => {
+        controller.pointerOnButton = true;
+        show();
+    };
+    const onButtonLeave = () => {
+        controller.pointerOnButton = false;
+        scheduleHide();
+    };
+
+    image.addEventListener("pointerenter", onImageEnter, { passive: true });
+    image.addEventListener("pointermove", onImageMove, { passive: true });
+    image.addEventListener("pointerleave", onImageLeave, { passive: true });
+    button.addEventListener("pointerenter", onButtonEnter, { passive: true });
+    button.addEventListener("pointerleave", onButtonLeave, { passive: true });
+
+    const onScrollOrResize = () => {
+        if (controller.visible) {
+            updateImageOverlayPosition();
+        }
+    };
+    window.addEventListener("scroll", onScrollOrResize, { passive: true });
+    window.addEventListener("resize", onScrollOrResize, { passive: true });
+
+    if (typeof ResizeObserver !== "undefined") {
+        controller.resizeObserver = new ResizeObserver(() => updateImageOverlayPosition());
+        controller.resizeObserver.observe(image);
+    }
+
+    button.addEventListener("click", async (event: MouseEvent) => {
+        event.stopPropagation();
+        event.preventDefault();
+
+        const imageUrl = getImageDownloadUrl(image);
+        if (!imageUrl) {
+            showNotification("Unable to resolve image URL", true);
+            return;
+        }
+
+        const filename = inferFileNameFromUrl(imageUrl, "image_download");
+        const ok = await sendDownloadToBackground({
+            type: "download_with_mydm",
+            url: imageUrl,
+            filename
+        });
+
+        if (ok) {
+            showNotification("Image sent to MyDM");
+        }
+    });
+
+    controller.cleanup = () => {
+        clearHide();
+        if (controller.rafHandle !== null) {
+            cancelAnimationFrame(controller.rafHandle);
+            controller.rafHandle = null;
+        }
+        controller.resizeObserver?.disconnect();
+        window.removeEventListener("scroll", onScrollOrResize);
+        window.removeEventListener("resize", onScrollOrResize);
+        image.removeEventListener("pointerenter", onImageEnter);
+        image.removeEventListener("pointermove", onImageMove);
+        image.removeEventListener("pointerleave", onImageLeave);
+        button.removeEventListener("pointerenter", onButtonEnter);
+        button.removeEventListener("pointerleave", onButtonLeave);
+        host.remove();
+        activeImageOverlays.delete(controller);
+    };
+
+    imageOverlayByElement.set(image, controller);
+    activeImageOverlays.add(controller);
+    updateImageOverlayPosition();
+}
+
 function cleanupStaleOverlays(): void {
     for (const overlay of Array.from(activeOverlays)) {
         if (!overlay.video.isConnected) {
+            overlay.cleanup();
+        }
+    }
+    for (const overlay of Array.from(activeImageOverlays)) {
+        if (!overlay.image.isConnected) {
             overlay.cleanup();
         }
     }
@@ -669,6 +1049,16 @@ function cleanupStaleOverlays(): void {
 function scanForVideos(root: ParentNode = document): void {
     const videos = root.querySelectorAll("video");
     videos.forEach((video) => injectVideoOverlay(video as HTMLVideoElement));
+}
+
+function scanForImages(root: ParentNode = document): void {
+    const images = root.querySelectorAll("img[src]");
+    let processed = 0;
+    for (const image of images) {
+        injectImageOverlay(image as HTMLImageElement);
+        processed++;
+        if (processed >= 250) break;
+    }
 }
 
 function isInterestingResource(url: string, kind: string): boolean {
@@ -745,6 +1135,7 @@ function scheduleRescan(reason: string): void {
     scanTimer = setTimeout(() => {
         scanTimer = null;
         scanForVideos();
+        scanForImages();
         cleanupStaleOverlays();
         void reportResources(collectResources());
         log("info", "rescan", { reason, url: location.href });
@@ -838,6 +1229,7 @@ function installMainWorldRelay(): void {
         if (event.source !== window) return;
         if (event.data?.type !== "MYDM_STREAM_INTERCEPT") return;
         const url = event.data.url;
+        const source = typeof event.data.source === "string" ? event.data.source : "unknown";
         if (typeof url !== "string" || !url.startsWith("http")) return;
 
         log("info", "main_world_stream_intercepted", { url: url.substring(0, 120) });
@@ -846,7 +1238,8 @@ function installMainWorldRelay(): void {
         sendRuntimeMessage({
             type: "report_stream_url",
             url,
-            pageUrl: location.href
+            pageUrl: location.href,
+            streamSource: source
         }).catch(() => { /* background might not be ready yet */ });
     });
 
@@ -857,14 +1250,25 @@ function installMainWorldRelay(): void {
     try {
         const stored = document.documentElement.dataset.mydmStreams;
         if (stored) {
-            const urls: string[] = JSON.parse(stored);
-            log("info", "reading_pre_captured_urls", { count: urls.length });
-            for (const url of urls) {
-                if (typeof url === "string" && url.startsWith("http")) {
+            const parsed = JSON.parse(stored) as unknown;
+            const entries = Array.isArray(parsed) ? parsed : [];
+            log("info", "reading_pre_captured_urls", { count: entries.length });
+            for (const entry of entries) {
+                const url = typeof entry === "string"
+                    ? entry
+                    : (entry && typeof entry === "object" && typeof (entry as Record<string, unknown>).url === "string"
+                        ? (entry as Record<string, unknown>).url as string
+                        : "");
+                const source = entry && typeof entry === "object" && typeof (entry as Record<string, unknown>).source === "string"
+                    ? (entry as Record<string, unknown>).source as string
+                    : "unknown";
+
+                if (url.startsWith("http")) {
                     sendRuntimeMessage({
                         type: "report_stream_url",
                         url,
-                        pageUrl: location.href
+                        pageUrl: location.href,
+                        streamSource: source
                     }).catch(() => { });
                 }
             }
@@ -874,6 +1278,7 @@ function installMainWorldRelay(): void {
 
 function bootstrap(): void {
     scanForVideos();
+    scanForImages();
     void reportResources(collectResources());
     installMutationObserver();
     installNavigationHooks();

@@ -101,12 +101,28 @@
       color: white;
     }
 
+    .media-type.resource {
+      background: #0EA5E9;
+      color: white;
+      max-width: 92px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
     .media-title {
       flex: 1;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
       font-size: 12px;
+    }
+
+    #mediaList,
+    #resourceList {
+      max-height: 130px;
+      overflow-y: auto;
+      padding-right: 2px;
     }
 
     .empty {
@@ -185,6 +201,13 @@
     <div class="section-title">Detected Media</div>
     <div id="mediaList">
       <div class="empty">No media detected on this page</div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Detected Resources</div>
+    <div id="resourceList">
+      <div class="empty">No files/images detected on this page</div>
     </div>
   </div>
 

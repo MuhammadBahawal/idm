@@ -32,6 +32,7 @@ interface ExtMessage {
     videoUrl?: string;
     audioUrl?: string;
     preferMuxed?: boolean;
+    streamSource?: string;
 }
 
 interface SendResult {
@@ -51,6 +52,7 @@ interface StreamCandidate {
     tabId: number;
     timestamp: number;
     host: string;
+    source: string;
     mimeType?: string;
     itag?: number;
     qualityLabel?: string;
@@ -393,10 +395,51 @@ function isYoutubeHost(host: string): boolean {
     return lower.includes("googlevideo.com") || lower.endsWith("youtube.com") || lower === "youtu.be";
 }
 
+function isYoutubePageUrl(urlValue: string): boolean {
+    try {
+        const parsed = new URL(urlValue);
+        const host = parsed.hostname.toLowerCase();
+        if (host.includes("googlevideo.com")) return false;
+        return host.endsWith("youtube.com") || host === "youtu.be" || host === "m.youtube.com";
+    } catch {
+        return false;
+    }
+}
+
+function normalizeStreamSource(source?: string): string {
+    return (source || "unknown").toLowerCase();
+}
+
+function getStreamSourceScore(source?: string): number {
+    const normalized = normalizeStreamSource(source);
+    if (normalized === "webrequest") return 950_000;
+    if (normalized === "fetch" || normalized === "xhr") return 900_000;
+    if (normalized.endsWith("_api")) return 500_000;
+    if (normalized === "json_parse" || normalized === "json_parse_nested") return 450_000;
+    if (normalized === "global_var" || normalized === "ytplayer_config" || normalized === "player_api") return 350_000;
+    return 150_000;
+}
+
+function isPlausibleYoutubeExpiry(parsed: URL): boolean {
+    const expire = parseIntParam(parsed, "expire");
+    if (expire === undefined) return true;
+
+    // Valid googlevideo stream URLs are usually short-lived (hours, not months/years).
+    const nowEpoch = Math.floor(Date.now() / 1000);
+    const maxFuture = nowEpoch + (7 * 24 * 60 * 60);
+    const minPast = nowEpoch - (24 * 60 * 60);
+    return expire >= minPast && expire <= maxFuture;
+}
+
 // Track response Content-Type by requestId for non-YouTube media detection
 const responseContentTypes = new Map<string, string>();
 
-function buildStreamCandidate(urlValue: string, tabId: number, contentType?: string): StreamCandidate | null {
+function buildStreamCandidate(
+    urlValue: string,
+    tabId: number,
+    contentType?: string,
+    source?: string
+): StreamCandidate | null {
     if (tabId < 0) return null;
     let parsed: URL;
     try {
@@ -407,6 +450,7 @@ function buildStreamCandidate(urlValue: string, tabId: number, contentType?: str
 
     const host = parsed.hostname.toLowerCase();
     const ytHost = isYoutubeHost(host);
+    const normalizedSource = normalizeStreamSource(source);
     const itag = parseIntParam(parsed, "itag");
     const profile = itag !== undefined ? YOUTUBE_ITAG_PROFILES[itag] : undefined;
 
@@ -451,6 +495,10 @@ function buildStreamCandidate(urlValue: string, tabId: number, contentType?: str
         || parsed.searchParams.get("mime")
     );
 
+    if (ytHost && parsed.pathname.includes("/videoplayback") && !isPlausibleYoutubeExpiry(parsed)) {
+        return null;
+    }
+
     // For non-YouTube hosts, also accept if contentType indicates media
     const isMediaByContentType = contentType
         ? MEDIA_CONTENT_TYPES.some((prefix) => contentType.toLowerCase().startsWith(prefix))
@@ -470,6 +518,7 @@ function buildStreamCandidate(urlValue: string, tabId: number, contentType?: str
         tabId,
         timestamp: Date.now(),
         host,
+        source: normalizedSource,
         mimeType,
         itag,
         qualityLabel,
@@ -482,7 +531,18 @@ function buildStreamCandidate(urlValue: string, tabId: number, contentType?: str
 
 function rememberStreamCandidate(candidate: StreamCandidate): void {
     const list = tabStreamCandidates.get(candidate.tabId) || [];
-    if (list.some((item) => item.url === candidate.url)) {
+    const existingIndex = list.findIndex((item) => item.url === candidate.url);
+    if (existingIndex >= 0) {
+        const existing = list[existingIndex];
+        const existingScore = getStreamSourceScore(existing.source);
+        const incomingScore = getStreamSourceScore(candidate.source);
+        if (incomingScore <= existingScore) {
+            return;
+        }
+        list[existingIndex] = candidate;
+        list.sort((a, b) => b.timestamp - a.timestamp);
+        tabStreamCandidates.set(candidate.tabId, list.slice(0, MAX_STREAM_CANDIDATES_PER_TAB));
+        persistStreamCandidates();
         return;
     }
 
@@ -524,12 +584,13 @@ async function restoreStreamCandidates(): Promise<void> {
 restoreStreamCandidates();
 
 function scoreStreamCandidate(candidate: StreamCandidate, preferMuxed: boolean): number {
+    const sourceScore = getStreamSourceScore(candidate.source);
     const muxedBonus = preferMuxed && candidate.muxed ? 1_000_000 : 0;
     const audioBonus = preferMuxed && candidate.hasAudio ? 250_000 : 0;
     const videoBonus = candidate.hasVideo ? 100_000 : 0;
     const heightScore = candidate.height * 1000;
     const recencyScore = Math.floor(candidate.timestamp / 1000);
-    return muxedBonus + audioBonus + videoBonus + heightScore + recencyScore;
+    return sourceScore + muxedBonus + audioBonus + videoBonus + heightScore + recencyScore;
 }
 
 function rankStreamCandidates(candidates: StreamCandidate[], preferMuxed: boolean): StreamCandidate[] {
@@ -724,6 +785,10 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 chrome.contextMenus.onClicked.addListener((info: chrome.contextMenus.OnClickData, tab?: chrome.tabs.Tab) => {
     const url = info.linkUrl || info.srcUrl || info.pageUrl;
     if (!url) return;
+    if (isYoutubePageUrl(url)) {
+        appendDebugLog("warn", "context_menu.youtube_page_blocked", { url });
+        return;
+    }
 
     void postToNative("add_download", {
         url,
@@ -742,6 +807,14 @@ chrome.runtime.onMessage.addListener((message: ExtMessage, sender, sendResponse)
                 case "download_with_mydm": {
                     if (!message.url) {
                         sendResponse({ success: false, error: "Missing URL", requestId });
+                        return;
+                    }
+                    if (isYoutubePageUrl(message.url)) {
+                        sendResponse({
+                            success: false,
+                            error: "Open the YouTube video and use the in-player MyDM button to capture downloadable streams.",
+                            requestId
+                        });
                         return;
                     }
 
@@ -1023,12 +1096,18 @@ chrome.runtime.onMessage.addListener((message: ExtMessage, sender, sendResponse)
                     const reportedUrl = message.url;
                     const reportTabId = sender.tab?.id;
                     if (typeof reportedUrl === "string" && typeof reportTabId === "number") {
-                        const candidate = buildStreamCandidate(reportedUrl, reportTabId);
+                        const candidate = buildStreamCandidate(
+                            reportedUrl,
+                            reportTabId,
+                            undefined,
+                            message.streamSource
+                        );
                         if (candidate) {
                             rememberStreamCandidate(candidate);
                             appendDebugLog("info", "stream.accepted", {
                                 tabId: reportTabId,
                                 url: reportedUrl.substring(0, 100),
+                                source: candidate.source,
                                 itag: candidate.itag,
                                 quality: candidate.qualityLabel,
                                 muxed: candidate.muxed,
@@ -1038,7 +1117,8 @@ chrome.runtime.onMessage.addListener((message: ExtMessage, sender, sendResponse)
                         } else {
                             appendDebugLog("warn", "stream.rejected_by_filter", {
                                 tabId: reportTabId,
-                                url: reportedUrl.substring(0, 120)
+                                url: reportedUrl.substring(0, 120),
+                                source: message.streamSource || "unknown"
                             });
                         }
                     }
@@ -1104,7 +1184,7 @@ if (chrome.webRequest) {
                 });
             }
 
-            const candidate = buildStreamCandidate(details.url, details.tabId, contentType);
+            const candidate = buildStreamCandidate(details.url, details.tabId, contentType, "webrequest");
             if (candidate) {
                 rememberStreamCandidate(candidate);
                 if (candidate.hasVideo) {
