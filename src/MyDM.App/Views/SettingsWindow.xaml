@@ -1,105 +1,132 @@
 <Window x:Class="MyDM.App.Views.SettingsWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="MyDM Settings" Height="480" Width="580"
-        WindowStartupLocation="CenterOwner" ResizeMode="NoResize"
-        Background="{StaticResource BgBrush}" FontFamily="Segoe UI">
+        Title="Settings" Height="620" Width="760"
+        WindowStartupLocation="CenterOwner" ResizeMode="CanResizeWithGrip"
+        Background="{StaticResource WindowBackgroundBrush}" FontFamily="Bahnschrift">
 
-    <DockPanel LastChildFill="True">
-        <Grid DockPanel.Dock="Bottom" Margin="16,0,16,16">
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <Border Grid.Row="0" CornerRadius="16" Padding="12"
+                Background="{StaticResource PanelCardBrush}"
+                BorderBrush="{StaticResource PanelBorderBrush}" BorderThickness="1">
+            <TabControl Background="Transparent" BorderThickness="0">
+                <TabItem Header="General">
+                    <StackPanel Margin="14">
+                        <TextBlock Text="Default Save Folder" Style="{StaticResource MetaLabelText}"/>
+                        <Grid Margin="0,4,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBox x:Name="DefaultPathTextBox"/>
+                            <Button Grid.Column="1" Content="Browse" Style="{StaticResource ToolbarButton}"
+                                    Margin="8,0,0,0" Click="BrowseDefaultPath_Click"/>
+                        </Grid>
+
+                        <TextBlock Text="Max Concurrent Downloads" Style="{StaticResource MetaLabelText}" Margin="0,16,0,0"/>
+                        <ComboBox x:Name="MaxConcurrentCombo" Width="120" HorizontalAlignment="Left" Margin="0,4,0,0">
+                            <ComboBoxItem Content="1"/>
+                            <ComboBoxItem Content="2"/>
+                            <ComboBoxItem Content="3" IsSelected="True"/>
+                            <ComboBoxItem Content="5"/>
+                            <ComboBoxItem Content="8"/>
+                            <ComboBoxItem Content="10"/>
+                        </ComboBox>
+
+                        <TextBlock Text="Default Connections Per Download" Style="{StaticResource MetaLabelText}" Margin="0,16,0,0"/>
+                        <ComboBox x:Name="DefaultConnectionsCombo" Width="120" HorizontalAlignment="Left" Margin="0,4,0,0">
+                            <ComboBoxItem Content="1"/>
+                            <ComboBoxItem Content="2"/>
+                            <ComboBoxItem Content="4"/>
+                            <ComboBoxItem Content="8" IsSelected="True"/>
+                            <ComboBoxItem Content="16"/>
+                            <ComboBoxItem Content="32"/>
+                        </ComboBox>
+
+                        <CheckBox x:Name="AutoPopupCheckBox" Content="Auto-open realtime monitor window when download starts"
+                                  Margin="0,18,0,0" Foreground="{StaticResource TextBrush}" IsChecked="True"/>
+                    </StackPanel>
+                </TabItem>
+
+                <TabItem Header="Connection">
+                    <StackPanel Margin="14">
+                        <TextBlock Text="Global Speed Limit (KB/s, 0 = unlimited)" Style="{StaticResource MetaLabelText}"/>
+                        <TextBox x:Name="SpeedLimitTextBox" Width="140" HorizontalAlignment="Left" Margin="0,4,0,0" Text="0"/>
+
+                        <TextBlock Text="Connection Timeout (seconds)" Style="{StaticResource MetaLabelText}" Margin="0,16,0,0"/>
+                        <TextBox x:Name="TimeoutTextBox" Width="140" HorizontalAlignment="Left" Margin="0,4,0,0" Text="30"/>
+
+                        <TextBlock Text="Max Retries" Style="{StaticResource MetaLabelText}" Margin="0,16,0,0"/>
+                        <TextBox x:Name="MaxRetriesTextBox" Width="140" HorizontalAlignment="Left" Margin="0,4,0,0" Text="10"/>
+                    </StackPanel>
+                </TabItem>
+
+                <TabItem Header="Scheduler">
+                    <StackPanel Margin="14">
+                        <CheckBox x:Name="QueueScheduleEnabledCheckBox" Content="Enable queue schedule window"
+                                  Foreground="{StaticResource TextBrush}" IsChecked="False"/>
+                        <TextBlock Text="Start Time (HH:mm)" Style="{StaticResource MetaLabelText}" Margin="0,14,0,0"/>
+                        <TextBox x:Name="QueueScheduleStartTextBox" Width="140" HorizontalAlignment="Left" Margin="0,4,0,0" Text="09:00"/>
+
+                        <TextBlock Text="Stop Time (HH:mm)" Style="{StaticResource MetaLabelText}" Margin="0,14,0,0"/>
+                        <TextBox x:Name="QueueScheduleStopTextBox" Width="140" HorizontalAlignment="Left" Margin="0,4,0,0" Text="18:00"/>
+
+                        <TextBlock Text="Allowed Days (Mon,Tue,Wed,Thu,Fri,Sat,Sun)" Style="{StaticResource MetaLabelText}" Margin="0,14,0,0"/>
+                        <TextBox x:Name="QueueScheduleDaysTextBox" Margin="0,4,0,0" Text="Mon,Tue,Wed,Thu,Fri"/>
+                    </StackPanel>
+                </TabItem>
+
+                <TabItem Header="FFmpeg">
+                    <StackPanel Margin="14">
+                        <TextBlock Text="FFmpeg Path" Style="{StaticResource MetaLabelText}"/>
+                        <Grid Margin="0,4,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBox x:Name="FfmpegPathTextBox"/>
+                            <Button Grid.Column="1" Content="Browse" Style="{StaticResource ToolbarButton}"
+                                    Margin="8,0,0,0" Click="BrowseFfmpeg_Click"/>
+                        </Grid>
+
+                        <TextBlock x:Name="FfmpegStatusLabel" Text="Status: checking..." Margin="0,12,0,0"
+                                   Foreground="{StaticResource TextMutedBrush}"/>
+                        <Button Content="Test FFmpeg" Style="{StaticResource PrimaryButton}" Margin="0,12,0,0"
+                                HorizontalAlignment="Left" Click="TestFfmpeg_Click"/>
+                    </StackPanel>
+                </TabItem>
+
+                <TabItem Header="Extension">
+                    <StackPanel Margin="14">
+                        <TextBlock Text="Browser Extension Integration" FontWeight="SemiBold" FontSize="15"
+                                   Foreground="{StaticResource TextBrush}" Margin="0,0,0,8"/>
+                        <TextBlock Text="MyDM extension connects to the native host via browser native messaging."
+                                   TextWrapping="Wrap" Foreground="{StaticResource TextMutedBrush}" Margin="0,0,0,12"/>
+
+                        <TextBlock Text="Extension ID" Style="{StaticResource MetaLabelText}"/>
+                        <TextBox x:Name="ExtensionIdTextBox" Width="360" HorizontalAlignment="Left" Margin="0,4,0,8"/>
+
+                        <TextBlock x:Name="NativeHostStatus" Text="Native Host: Not registered" Margin="0,0,0,8"
+                                   Foreground="{StaticResource TextMutedBrush}"/>
+                        <Button Content="Register Native Host" Style="{StaticResource PrimaryButton}"
+                                HorizontalAlignment="Left" Click="RegisterNativeHost_Click"/>
+                    </StackPanel>
+                </TabItem>
+            </TabControl>
+        </Border>
+
+        <Border Grid.Row="1" Margin="0,12,0,0" CornerRadius="14" Padding="12"
+                Background="{StaticResource PanelCardBrush}"
+                BorderBrush="{StaticResource PanelBorderBrush}" BorderThickness="1">
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
-                <Button Content="Save" Style="{StaticResource PrimaryButton}" Click="Save_Click" Margin="0,0,12,0"/>
-                <Button Content="Close" Style="{StaticResource ToolbarButton}" Click="Close_Click"
-                        Background="{StaticResource BgLightBrush}"/>
+                <Button Content="Save" Style="{StaticResource PrimaryButton}" Click="Save_Click" Margin="0,0,10,0"/>
+                <Button Content="Close" Style="{StaticResource ToolbarButton}" Click="Close_Click"/>
             </StackPanel>
-        </Grid>
-
-        <TabControl Background="Transparent" BorderThickness="0" Margin="16">
-            <!-- General Tab -->
-            <TabItem Header="General" Foreground="{StaticResource TextBrush}">
-                <StackPanel Margin="16">
-                    <Label Content="Default Save Folder:" Margin="0,0,0,4"/>
-                    <Grid>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="Auto"/>
-                        </Grid.ColumnDefinitions>
-                        <TextBox x:Name="DefaultPathTextBox"/>
-                        <Button Grid.Column="1" Content="Browse" Style="{StaticResource ToolbarButton}"
-                                Background="{StaticResource BgLightBrush}" Margin="8,0,0,0" Click="BrowseDefaultPath_Click"/>
-                    </Grid>
-
-                    <Label Content="Max Concurrent Downloads:" Margin="0,16,0,4"/>
-                    <ComboBox x:Name="MaxConcurrentCombo" Width="80" HorizontalAlignment="Left">
-                        <ComboBoxItem Content="1"/>
-                        <ComboBoxItem Content="2"/>
-                        <ComboBoxItem Content="3" IsSelected="True"/>
-                        <ComboBoxItem Content="5"/>
-                        <ComboBoxItem Content="8"/>
-                        <ComboBoxItem Content="10"/>
-                    </ComboBox>
-
-                    <Label Content="Default Connections Per Download:" Margin="0,16,0,4"/>
-                    <ComboBox x:Name="DefaultConnectionsCombo" Width="80" HorizontalAlignment="Left">
-                        <ComboBoxItem Content="1"/>
-                        <ComboBoxItem Content="4"/>
-                        <ComboBoxItem Content="8" IsSelected="True"/>
-                        <ComboBoxItem Content="16"/>
-                        <ComboBoxItem Content="32"/>
-                    </ComboBox>
-                </StackPanel>
-            </TabItem>
-
-            <!-- Connection Tab -->
-            <TabItem Header="Connection" Foreground="{StaticResource TextBrush}">
-                <StackPanel Margin="16">
-                    <Label Content="Global Speed Limit (KB/s, 0 = unlimited):" Margin="0,0,0,4"/>
-                    <TextBox x:Name="SpeedLimitTextBox" Width="120" HorizontalAlignment="Left" Text="0"/>
-
-                    <Label Content="Connection Timeout (seconds):" Margin="0,16,0,4"/>
-                    <TextBox x:Name="TimeoutTextBox" Width="120" HorizontalAlignment="Left" Text="30"/>
-
-                    <Label Content="Max Retries:" Margin="0,16,0,4"/>
-                    <TextBox x:Name="MaxRetriesTextBox" Width="120" HorizontalAlignment="Left" Text="10"/>
-                </StackPanel>
-            </TabItem>
-
-            <!-- FFmpeg Tab -->
-            <TabItem Header="FFmpeg" Foreground="{StaticResource TextBrush}">
-                <StackPanel Margin="16">
-                    <Label Content="FFmpeg Path:" Margin="0,0,0,4"/>
-                    <Grid>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="Auto"/>
-                        </Grid.ColumnDefinitions>
-                        <TextBox x:Name="FfmpegPathTextBox"/>
-                        <Button Grid.Column="1" Content="Browse" Style="{StaticResource ToolbarButton}"
-                                Background="{StaticResource BgLightBrush}" Margin="8,0,0,0" Click="BrowseFfmpeg_Click"/>
-                    </Grid>
-
-                    <Label x:Name="FfmpegStatusLabel" Content="Status: checking..." Margin="0,12,0,0"
-                           Foreground="{StaticResource TextMutedBrush}"/>
-                    <Button Content="Test FFmpeg" Style="{StaticResource PrimaryButton}" Margin="0,12,0,0"
-                            HorizontalAlignment="Left" Click="TestFfmpeg_Click"/>
-                </StackPanel>
-            </TabItem>
-
-            <!-- Extension Tab -->
-            <TabItem Header="Extension" Foreground="{StaticResource TextBrush}">
-                <StackPanel Margin="16">
-                    <Label Content="Browser Extension Integration" FontWeight="Bold" FontSize="15" Margin="0,0,0,8"/>
-                    <TextBlock Text="The MyDM browser extension communicates via Native Messaging." TextWrapping="Wrap"
-                               Foreground="{StaticResource TextMutedBrush}" Margin="0,0,0,12"/>
-
-                    <Label Content="Extension ID (from chrome://extensions):" Margin="0,0,0,4"/>
-                    <TextBox x:Name="ExtensionIdTextBox" Width="320" HorizontalAlignment="Left" Margin="0,0,0,8"/>
-
-                    <Label x:Name="NativeHostStatus" Content="Native Host: Not registered" Margin="0,0,0,8"/>
-                    <Button Content="Register Native Host" Style="{StaticResource PrimaryButton}"
-                            HorizontalAlignment="Left" Click="RegisterNativeHost_Click"/>
-                </StackPanel>
-            </TabItem>
-        </TabControl>
-    </DockPanel>
+        </Border>
+    </Grid>
 </Window>

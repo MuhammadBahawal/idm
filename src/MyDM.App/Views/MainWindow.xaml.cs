@@ -19,7 +19,7 @@ public partial class MainWindow : Window
     {
         if (e.AddedItems.Count > 0 && e.AddedItems[0] is string category)
         {
-            if (category == "─────────") return;
+            if (category == "------------") return;
             _viewModel.FilterByCategory(category);
         }
     }

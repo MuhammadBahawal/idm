@@ -22,6 +22,16 @@ public partial class AddUrlDialog : Window
             ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads", "MyDM");
         SavePathTextBox.Text = defaultPath;
 
+        var defaultConnections = _repository.GetSetting("DefaultConnections") ?? "8";
+        foreach (var comboItem in ConnectionsCombo.Items.OfType<ComboBoxItem>())
+        {
+            if (string.Equals(comboItem.Content?.ToString(), defaultConnections, StringComparison.OrdinalIgnoreCase))
+            {
+                ConnectionsCombo.SelectedItem = comboItem;
+                break;
+            }
+        }
+
         // Check clipboard for URL
         try
         {

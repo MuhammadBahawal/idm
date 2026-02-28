@@ -20,6 +20,7 @@ public class DownloadEngine : IDisposable
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _activeDownloads = new();
     private readonly ConcurrentDictionary<string, DownloadItem> _downloadCache = new();
     private readonly ConcurrentDictionary<string, IReadOnlyDictionary<string, string>> _requestHeaders = new();
+    private readonly ConcurrentDictionary<string, RuntimeTelemetry> _telemetry = new();
     private readonly SegmentDownloader _segmentDownloader;
 
     public event Action<DownloadItem>? OnProgressUpdated;
@@ -64,14 +65,19 @@ public class DownloadEngine : IDisposable
         if (!UrlHelper.IsValidUrl(url))
             throw new ArgumentException("Invalid URL", nameof(url));
 
+        var defaultBasePath = _repository.GetSetting("DefaultSavePath")
+            ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads", "MyDM");
+        var selectedBasePath = string.IsNullOrWhiteSpace(savePath) ? defaultBasePath : savePath;
+        var autoCategorizePath = string.IsNullOrWhiteSpace(savePath);
+        var initialCategory = category ?? MimeDetector.Detect(url, null);
+
         var item = new DownloadItem
         {
             Url = url,
             FileName = fileName ?? UrlHelper.ExtractFileName(url),
-            SavePath = savePath ?? Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads", "MyDM"),
+            SavePath = ResolveCategorySavePath(selectedBasePath, initialCategory, autoCategorizePath),
             Connections = Math.Clamp(connections, 1, 32),
-            Category = category ?? MimeDetector.Detect(url, null)
+            Category = initialCategory
         };
 
         string? probeWarning = null;
@@ -93,6 +99,8 @@ public class DownloadEngine : IDisposable
         {
             probeWarning = $"Could not probe URL: {ex.Message}";
         }
+
+        item.SavePath = ResolveCategorySavePath(selectedBasePath, item.Category, autoCategorizePath);
 
         FileHelper.EnsureDirectory(item.SavePath);
         _repository.Insert(item);
@@ -128,6 +136,7 @@ public class DownloadEngine : IDisposable
 
         var cts = new CancellationTokenSource();
         _activeDownloads[downloadId] = cts;
+        InitializeTelemetry(item);
 
         item.Status = DownloadStatus.Downloading;
         item.ErrorMessage = null;
@@ -184,25 +193,49 @@ public class DownloadEngine : IDisposable
 
                 item.Status = DownloadStatus.Complete;
                 item.CompletedAt = DateTime.UtcNow;
+                item.TransferRate = 0;
+                item.TimeLeft = TimeSpan.Zero;
+                foreach (var seg in item.Segments)
+                {
+                    seg.TransferRate = 0;
+                }
                 _repository.Update(item);
                 Log(downloadId, "Info", "Download completed successfully");
+                OnProgressUpdated?.Invoke(item);
                 OnStatusChanged?.Invoke(item);
+                ResetTelemetry(item.Id);
             }
             catch (OperationCanceledException)
             {
                 item.Status = DownloadStatus.Paused;
+                item.TransferRate = 0;
+                item.TimeLeft = null;
+                foreach (var seg in item.Segments)
+                {
+                    seg.TransferRate = 0;
+                }
                 _repository.Update(item);
                 Log(downloadId, "Info", "Download paused");
+                OnProgressUpdated?.Invoke(item);
                 OnStatusChanged?.Invoke(item);
+                ResetTelemetry(item.Id);
             }
             catch (Exception ex)
             {
                 item.Status = DownloadStatus.Error;
                 item.ErrorMessage = ex.Message;
                 item.RetryCount++;
+                item.TransferRate = 0;
+                item.TimeLeft = null;
+                foreach (var seg in item.Segments)
+                {
+                    seg.TransferRate = 0;
+                }
                 _repository.Update(item);
                 Log(downloadId, "Error", $"Download failed: {ex.Message}");
+                OnProgressUpdated?.Invoke(item);
                 OnStatusChanged?.Invoke(item);
+                ResetTelemetry(item.Id);
 
                 // Auto-retry if retryable
                 if (RetryPolicy.IsRetryable(ex) && item.RetryCount <= _retryPolicy.MaxRetries)
@@ -238,9 +271,17 @@ public class DownloadEngine : IDisposable
         if (item != null)
         {
             item.Status = DownloadStatus.Paused;
+            item.TransferRate = 0;
+            item.TimeLeft = null;
+            foreach (var seg in item.Segments)
+            {
+                seg.TransferRate = 0;
+            }
             _repository.Update(item);
             SaveSegmentProgress(item);
+            OnProgressUpdated?.Invoke(item);
             OnStatusChanged?.Invoke(item);
+            ResetTelemetry(downloadId);
         }
     }
 
@@ -254,9 +295,17 @@ public class DownloadEngine : IDisposable
         if (item != null)
         {
             item.Status = DownloadStatus.Cancelled;
+            item.TransferRate = 0;
+            item.TimeLeft = null;
+            foreach (var seg in item.Segments)
+            {
+                seg.TransferRate = 0;
+            }
             _repository.Update(item);
             CleanupTempFiles(item);
+            OnProgressUpdated?.Invoke(item);
             OnStatusChanged?.Invoke(item);
+            ResetTelemetry(downloadId);
         }
     }
 
@@ -289,6 +338,7 @@ public class DownloadEngine : IDisposable
             _repository.Delete(downloadId);
             _downloadCache.TryRemove(downloadId, out _);
             _requestHeaders.TryRemove(downloadId, out _);
+            _telemetry.TryRemove(downloadId, out _);
         }
     }
 
@@ -327,7 +377,13 @@ public class DownloadEngine : IDisposable
                 item.Status = DownloadStatus.Paused;
                 _repository.Update(item);
             }
+            item.TransferRate = 0;
+            item.TimeLeft = null;
             item.Segments = _repository.GetSegments(item.Id);
+            foreach (var seg in item.Segments)
+            {
+                seg.TransferRate = 0;
+            }
         }
     }
 
@@ -363,12 +419,14 @@ public class DownloadEngine : IDisposable
 
         var progressLock = new object();
         var lastProgressUpdate = DateTime.MinValue;
+        var runtime = _telemetry.GetOrAdd(item.Id, _ => new RuntimeTelemetry(item));
         var headers = GetHeaders(item.Id);
 
         var tasks = pendingSegments.Select(segment => Task.Run(async () =>
         {
             await _segmentDownloader.DownloadSegmentAsync(
                 segment, item.Url, item.SpeedLimit,
+                speedLimitProvider: () => item.SpeedLimit,
                 headers: headers,
                 onProgress: (seg, bytesRead) =>
                 {
@@ -376,7 +434,8 @@ public class DownloadEngine : IDisposable
                     {
                         item.DownloadedSize = item.Segments.Sum(s => s.DownloadedBytes);
                         var now = DateTime.UtcNow;
-                        if ((now - lastProgressUpdate).TotalMilliseconds > 250)
+                        UpdateRealtimeStats(item, runtime, now);
+                        if ((now - lastProgressUpdate).TotalMilliseconds > 120)
                         {
                             lastProgressUpdate = now;
                             _repository.UpdateSegment(seg);
@@ -416,17 +475,20 @@ public class DownloadEngine : IDisposable
     {
         Log(item.Id, "Info", "Server does not support Range. Downloading as single stream.");
         var lastUpdate = DateTime.MinValue;
+        var runtime = _telemetry.GetOrAdd(item.Id, _ => new RuntimeTelemetry(item));
         var headers = GetHeaders(item.Id);
 
         await _segmentDownloader.DownloadSingleStreamAsync(
             item.Url, item.PartFilePath, item.SpeedLimit,
+            speedLimitProvider: () => item.SpeedLimit,
             headers: headers,
             onProgress: (downloaded, total) =>
             {
                 item.DownloadedSize = downloaded;
                 if (total > 0) item.TotalSize = total;
                 var now = DateTime.UtcNow;
-                if ((now - lastUpdate).TotalMilliseconds > 250)
+                UpdateRealtimeStats(item, runtime, now);
+                if ((now - lastUpdate).TotalMilliseconds > 120)
                 {
                     lastUpdate = now;
                     _repository.UpdateProgress(item.Id, downloaded, DownloadStatus.Downloading);
@@ -516,6 +578,99 @@ public class DownloadEngine : IDisposable
         return _requestHeaders.TryGetValue(downloadId, out var headers) ? headers : null;
     }
 
+    private string ResolveCategorySavePath(string basePath, string category, bool autoCategorizePath)
+    {
+        if (!autoCategorizePath)
+        {
+            return basePath;
+        }
+
+        var rule = _repository
+            .GetCategories()
+            .FirstOrDefault(cat => string.Equals(cat.Name, category, StringComparison.OrdinalIgnoreCase));
+
+        var targetFolder = !string.IsNullOrWhiteSpace(rule?.SaveFolder)
+            ? rule.SaveFolder
+            : category;
+
+        if (string.IsNullOrWhiteSpace(targetFolder))
+        {
+            targetFolder = "Others";
+        }
+
+        var invalidChars = Path.GetInvalidFileNameChars();
+        var sanitizedFolder = new string(targetFolder.Select(ch => invalidChars.Contains(ch) ? '_' : ch).ToArray());
+        return Path.Combine(basePath, sanitizedFolder);
+    }
+
+    private void InitializeTelemetry(DownloadItem item)
+    {
+        _telemetry[item.Id] = new RuntimeTelemetry(item);
+    }
+
+    private void ResetTelemetry(string downloadId)
+    {
+        _telemetry.TryRemove(downloadId, out _);
+    }
+
+    private static void UpdateRealtimeStats(DownloadItem item, RuntimeTelemetry telemetry, DateTime now)
+    {
+        var elapsedSeconds = (now - telemetry.LastSampleUtc).TotalSeconds;
+        if (elapsedSeconds <= 0)
+        {
+            return;
+        }
+
+        var downloadedDelta = item.DownloadedSize - telemetry.LastDownloadedSize;
+        var instantRate = downloadedDelta > 0 ? downloadedDelta / elapsedSeconds : 0;
+
+        item.TransferRate = instantRate <= 0
+            ? item.TransferRate * 0.80
+            : item.TransferRate <= 0
+                ? instantRate
+                : (item.TransferRate * 0.65) + (instantRate * 0.35);
+
+        if (item.TransferRate < 1)
+        {
+            item.TransferRate = 0;
+        }
+
+        if (item.TotalSize > 0 && item.TransferRate > 0)
+        {
+            var remainingBytes = Math.Max(0, item.TotalSize - item.DownloadedSize);
+            item.TimeLeft = TimeSpan.FromSeconds(remainingBytes / item.TransferRate);
+        }
+        else
+        {
+            item.TimeLeft = null;
+        }
+
+        foreach (var segment in item.Segments)
+        {
+            var previousSegmentBytes = telemetry.LastSegmentBytes.TryGetValue(segment.Index, out var value)
+                ? value
+                : segment.DownloadedBytes;
+            var segmentDelta = segment.DownloadedBytes - previousSegmentBytes;
+            var segmentInstantRate = segmentDelta > 0 ? segmentDelta / elapsedSeconds : 0;
+
+            segment.TransferRate = segmentInstantRate <= 0
+                ? segment.TransferRate * 0.75
+                : segment.TransferRate <= 0
+                    ? segmentInstantRate
+                    : (segment.TransferRate * 0.60) + (segmentInstantRate * 0.40);
+
+            if (segment.TransferRate < 1)
+            {
+                segment.TransferRate = 0;
+            }
+
+            telemetry.LastSegmentBytes[segment.Index] = segment.DownloadedBytes;
+        }
+
+        telemetry.LastDownloadedSize = item.DownloadedSize;
+        telemetry.LastSampleUtc = now;
+    }
+
     /// <summary>
     /// Automatically inject Referer and Origin headers for googlevideo.com URLs.
     /// These headers are REQUIRED — without them, YouTube returns 403 Forbidden.
@@ -601,6 +756,23 @@ public class DownloadEngine : IDisposable
             SupportsRange = supportsRange,
             FileName = fileName
         };
+    }
+
+    private sealed class RuntimeTelemetry
+    {
+        public RuntimeTelemetry(DownloadItem item)
+        {
+            LastDownloadedSize = item.DownloadedSize;
+            LastSampleUtc = DateTime.UtcNow;
+            foreach (var segment in item.Segments)
+            {
+                LastSegmentBytes[segment.Index] = segment.DownloadedBytes;
+            }
+        }
+
+        public long LastDownloadedSize { get; set; }
+        public DateTime LastSampleUtc { get; set; }
+        public Dictionary<int, long> LastSegmentBytes { get; } = new();
     }
 
     public void Dispose()

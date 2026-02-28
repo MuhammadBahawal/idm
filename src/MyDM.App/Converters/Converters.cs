@@ -11,7 +11,9 @@ public class FileSizeConverter : IValueConverter
     public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
     {
         if (value is long size && size > 0)
+        {
             return FileHelper.FormatSize(size);
+        }
         return "Unknown";
     }
 
@@ -24,8 +26,10 @@ public class SpeedConverter : IValueConverter
     public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
     {
         if (value is double speed && speed > 0)
+        {
             return FileHelper.FormatSpeed(speed);
-        return "—";
+        }
+        return "0 B/s";
     }
 
     public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
@@ -37,8 +41,10 @@ public class TimeLeftConverter : IValueConverter
     public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
     {
         if (value is TimeSpan ts)
+        {
             return FileHelper.FormatTimeLeft(ts);
-        return "—";
+        }
+        return "Unknown";
     }
 
     public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
@@ -51,15 +57,15 @@ public class StatusToStringConverter : IValueConverter
     {
         return value is DownloadStatus status ? status switch
         {
-            DownloadStatus.Queued => "⏳ Queued",
-            DownloadStatus.Downloading => "⬇️ Downloading",
-            DownloadStatus.Paused => "⏸️ Paused",
-            DownloadStatus.Complete => "✅ Complete",
-            DownloadStatus.Error => "❌ Error",
-            DownloadStatus.Cancelled => "🚫 Cancelled",
-            DownloadStatus.Merging => "🔄 Merging",
-            _ => value.ToString() ?? ""
-        } : "";
+            DownloadStatus.Queued => "Queued",
+            DownloadStatus.Downloading => "Downloading",
+            DownloadStatus.Paused => "Paused",
+            DownloadStatus.Complete => "Complete",
+            DownloadStatus.Error => "Error",
+            DownloadStatus.Cancelled => "Cancelled",
+            DownloadStatus.Merging => "Merging",
+            _ => value.ToString() ?? string.Empty
+        } : string.Empty;
     }
 
     public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
@@ -107,9 +113,9 @@ public class BoolToVisibilityConverter : IValueConverter
 {
     public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
     {
-        return value is bool b && b ? Visibility.Visible : Visibility.Collapsed;
+        return value is bool enabled && enabled ? Visibility.Visible : Visibility.Collapsed;
     }
 
     public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
-        => value is Visibility v && v == Visibility.Visible;
+        => value is Visibility visibility && visibility == Visibility.Visible;
 }

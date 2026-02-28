@@ -10,6 +10,7 @@ public class DownloadSegment
     public long DownloadedBytes { get; set; }
     public SegmentStatus Status { get; set; } = SegmentStatus.Pending;
     public string? TempFile { get; set; }
+    public double TransferRate { get; set; } // bytes/sec current
 
     public long TotalBytes => EndByte - StartByte + 1;
     public long RemainingBytes => TotalBytes - DownloadedBytes;

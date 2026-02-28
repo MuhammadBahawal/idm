@@ -1,5 +1,7 @@
 using System.Text;
 using System.Text.Json;
+using System.ComponentModel;
+using System.Diagnostics;
 using MyDM.Core.Data;
 using MyDM.Core.Engine;
 using MyDM.Core.Media;
@@ -20,6 +22,8 @@ internal static class Program
     private static FfmpegMuxer? _muxer;
     private static readonly SemaphoreSlim _logLock = new(1, 1);
     private static string _logPath = string.Empty;
+    private static string _ytDebugLogPath = string.Empty;
+    private const int YtDlpTimeoutMs = 30 * 60 * 1000;
 
     static async Task Main(string[] args)
     {
@@ -28,6 +32,7 @@ internal static class Program
             "MyDM");
         Directory.CreateDirectory(appDataDir);
         _logPath = Path.Combine(appDataDir, "nativehost.log");
+        _ytDebugLogPath = Path.Combine(appDataDir, "yt-dlp-debug.log");
 
         try
         {
@@ -183,6 +188,7 @@ internal static class Program
             "add_download" => HandleAddDownloadAsync(message, requestId),
             "add_media_download" => HandleAddMediaDownloadAsync(message, requestId),
             "add_video_download" => HandleAddVideoDownloadAsync(message, requestId),
+            "add_youtube_download" => HandleAddYouTubeDownloadAsync(message, requestId),
             "get_status" => Task.FromResult(HandleGetStatus(message, requestId)),
             _ => Task.FromResult(AddRequestId(new NativeMessage
             {
@@ -574,6 +580,1006 @@ internal static class Program
         }
     }
 
+    private static async Task<NativeMessage> HandleAddYouTubeDownloadAsync(NativeMessage message, string requestId)
+    {
+        var rawVideoUrl = GetPayloadString(message, "videoUrl") ?? GetPayloadString(message, "url");
+        var fileName = GetPayloadString(message, "filename");
+        var title = GetPayloadString(message, "title");
+        var quality = GetPayloadString(message, "quality");
+        var referrer = GetPayloadString(message, "referrer");
+        var pageUrl = GetPayloadString(message, "pageUrl");
+        var clickTsIso = GetPayloadString(message, "clickTsIso");
+        var detectedVideoUrl = GetPayloadString(message, "detectedVideoUrl");
+        var canonicalFromGui = GetPayloadString(message, "canonicalYoutubeUrl");
+        var requestSource = GetPayloadString(message, "requestSource") ?? "unknown";
+        var headers = BuildRequestHeaders(message);
+
+        if (string.IsNullOrWhiteSpace(rawVideoUrl) || !UrlHelper.IsValidUrl(rawVideoUrl))
+        {
+            return AddRequestId(new NativeMessage
+            {
+                Type = "error",
+                Payload = new Dictionary<string, object>
+                {
+                    { "message", "Invalid or missing YouTube URL" },
+                    { "code", "INVALID_YOUTUBE_URL" }
+                }
+            }, requestId);
+        }
+
+        var videoUrl = NormalizeYouTubeUrl(rawVideoUrl)
+            ?? NormalizeYouTubeUrl(canonicalFromGui)
+            ?? NormalizeYouTubeUrl(pageUrl);
+
+        if (string.IsNullOrWhiteSpace(videoUrl) || !IsYouTubePageUrl(videoUrl))
+        {
+            return AddRequestId(new NativeMessage
+            {
+                Type = "error",
+                Payload = new Dictionary<string, object>
+                {
+                    { "message", "URL must be a YouTube page URL (youtube.com / youtu.be)" },
+                    { "code", "UNSUPPORTED_YOUTUBE_URL" }
+                }
+            }, requestId);
+        }
+
+        try
+        {
+            await LogAsync("info", "youtube.gui.click_received", requestId, new
+            {
+                clickTsIso = clickTsIso ?? string.Empty,
+                requestSource,
+                pageUrl = pageUrl ?? string.Empty,
+                detectedVideoUrl = detectedVideoUrl ?? string.Empty,
+                rawVideoUrl = rawVideoUrl ?? string.Empty,
+                canonicalFromGui = canonicalFromGui ?? string.Empty,
+                normalizedVideoUrl = videoUrl
+            });
+            await LogYouTubeDebugAsync("youtube.gui.click_received", requestId, new
+            {
+                clickTsIso = clickTsIso ?? string.Empty,
+                requestSource,
+                pageUrl = pageUrl ?? string.Empty,
+                detectedVideoUrl = detectedVideoUrl ?? string.Empty,
+                rawVideoUrl = rawVideoUrl ?? string.Empty,
+                canonicalFromGui = canonicalFromGui ?? string.Empty,
+                normalizedVideoUrl = videoUrl
+            });
+
+            var saveDir = ResolveVideoSaveDirectory();
+            Directory.CreateDirectory(saveDir);
+
+            if (!IsDirectoryWritable(saveDir, out var writeProbeError))
+            {
+                await LogAsync("error", "youtube.output.dir_not_writable", requestId, new
+                {
+                    saveDir,
+                    writeProbeError
+                });
+                await LogYouTubeDebugAsync("youtube.output.dir_not_writable", requestId, new
+                {
+                    saveDir,
+                    writeProbeError
+                });
+                return AddRequestId(new NativeMessage
+                {
+                    Type = "error",
+                    Payload = new Dictionary<string, object>
+                    {
+                        { "message", $"Download folder is not writable: {saveDir}. {writeProbeError}" },
+                        { "code", "OUTPUT_DIR_NOT_WRITABLE" }
+                    }
+                }, requestId);
+            }
+
+            var outputTemplate = BuildYouTubeOutputTemplate(saveDir, fileName, title);
+            var formatSelector = BuildYouTubeFormatSelector(quality);
+
+            var headersWithoutCookie = headers != null
+                ? new Dictionary<string, string>(headers, StringComparer.OrdinalIgnoreCase)
+                : null;
+            headersWithoutCookie?.Remove("Cookie");
+
+            var runnerSpecs = ResolveYtDlpRunnerSpecs();
+            await LogAsync("info", "youtube.runtime.environment", requestId, new
+            {
+                path = Environment.GetEnvironmentVariable("PATH") ?? string.Empty,
+                appBase = AppContext.BaseDirectory,
+                cwd = Environment.CurrentDirectory,
+                discoveredRunners = runnerSpecs.Select(r => r.DisplayName).ToArray()
+            });
+            await LogYouTubeDebugAsync("youtube.runtime.environment", requestId, new
+            {
+                path = Environment.GetEnvironmentVariable("PATH") ?? string.Empty,
+                appBase = AppContext.BaseDirectory,
+                cwd = Environment.CurrentDirectory,
+                discoveredRunners = runnerSpecs.Select(r => r.DisplayName).ToArray()
+            });
+
+            var attempts = new List<(string FileName, IReadOnlyList<string> Args, string Runner, string Mode, bool CliParity, bool IncludesCookieHeader, string? CookiesFromBrowser)>();
+            void AddAttemptsForMode(
+                string mode,
+                bool cliParity,
+                bool includesCookieHeader,
+                string? cookiesFromBrowser,
+                IReadOnlyList<string> modeArgs)
+            {
+                foreach (var runner in runnerSpecs)
+                {
+                    var allArgs = new List<string>(runner.PrefixArgs.Count + modeArgs.Count);
+                    allArgs.AddRange(runner.PrefixArgs);
+                    allArgs.AddRange(modeArgs);
+                    attempts.Add((runner.Executable, allArgs, runner.DisplayName, mode, cliParity, includesCookieHeader, cookiesFromBrowser));
+                }
+            }
+
+            var cliParityArgs = BuildYtDlpArgs(
+                videoUrl,
+                outputTemplate,
+                formatSelector,
+                referrer,
+                headersWithoutCookie,
+                includeCookieHeader: false,
+                cookiesFromBrowser: null);
+            AddAttemptsForMode("cli_parity", cliParity: true, includesCookieHeader: false, cookiesFromBrowser: null, cliParityArgs);
+
+            var chromeProfileCookieArgs = BuildYtDlpArgs(
+                videoUrl,
+                outputTemplate,
+                formatSelector,
+                referrer,
+                headersWithoutCookie,
+                includeCookieHeader: false,
+                cookiesFromBrowser: "chrome");
+            AddAttemptsForMode("with_cookies_from_browser_chrome", cliParity: false, includesCookieHeader: false, cookiesFromBrowser: "chrome", chromeProfileCookieArgs);
+
+            var chromiumProfileCookieArgs = BuildYtDlpArgs(
+                videoUrl,
+                outputTemplate,
+                formatSelector,
+                referrer,
+                headersWithoutCookie,
+                includeCookieHeader: false,
+                cookiesFromBrowser: "chromium");
+            AddAttemptsForMode("with_cookies_from_browser_chromium", cliParity: false, includesCookieHeader: false, cookiesFromBrowser: "chromium", chromiumProfileCookieArgs);
+
+            if (headers != null &&
+                headers.TryGetValue("Cookie", out var cookieHeader) &&
+                !string.IsNullOrWhiteSpace(cookieHeader))
+            {
+                var cookieAwareArgs = BuildYtDlpArgs(
+                    videoUrl,
+                    outputTemplate,
+                    formatSelector,
+                    referrer,
+                    headers,
+                    includeCookieHeader: true,
+                    cookiesFromBrowser: null);
+                AddAttemptsForMode("with_browser_cookie_header", cliParity: false, includesCookieHeader: true, cookiesFromBrowser: null, cookieAwareArgs);
+            }
+
+            ProcessExecutionResult? lastResult = null;
+            string? runnerUsed = null;
+            string? modeUsed = null;
+
+            foreach (var attempt in attempts)
+            {
+                await LogAsync("info", "youtube.ytdlp.command", requestId, new
+                {
+                    mode = attempt.Mode,
+                    cliParity = attempt.CliParity,
+                    includesCookieHeader = attempt.IncludesCookieHeader,
+                    cookiesFromBrowser = attempt.CookiesFromBrowser ?? string.Empty,
+                    runner = attempt.Runner,
+                    executable = attempt.FileName,
+                    arguments = attempt.Args,
+                    commandLine = BuildCommandLineForLog(attempt.FileName, attempt.Args),
+                    outputTemplate,
+                    saveDir,
+                    formatSelector,
+                    referrer = referrer ?? string.Empty,
+                    headers
+                });
+                await LogYouTubeDebugAsync("youtube.ytdlp.command", requestId, new
+                {
+                    mode = attempt.Mode,
+                    cliParity = attempt.CliParity,
+                    includesCookieHeader = attempt.IncludesCookieHeader,
+                    cookiesFromBrowser = attempt.CookiesFromBrowser ?? string.Empty,
+                    runner = attempt.Runner,
+                    executable = attempt.FileName,
+                    arguments = attempt.Args,
+                    commandLine = BuildCommandLineForLog(attempt.FileName, attempt.Args),
+                    outputTemplate,
+                    saveDir,
+                    formatSelector,
+                    referrer = referrer ?? string.Empty,
+                    headers
+                });
+
+                await LogAsync("info", "youtube.ytdlp.process.start", requestId, new
+                {
+                    mode = attempt.Mode,
+                    cliParity = attempt.CliParity,
+                    includesCookieHeader = attempt.IncludesCookieHeader,
+                    cookiesFromBrowser = attempt.CookiesFromBrowser ?? string.Empty,
+                    runner = attempt.Runner,
+                    executable = attempt.FileName
+                });
+                await LogYouTubeDebugAsync("youtube.ytdlp.process.start", requestId, new
+                {
+                    mode = attempt.Mode,
+                    cliParity = attempt.CliParity,
+                    includesCookieHeader = attempt.IncludesCookieHeader,
+                    cookiesFromBrowser = attempt.CookiesFromBrowser ?? string.Empty,
+                    runner = attempt.Runner,
+                    executable = attempt.FileName
+                });
+
+                var result = await ExecuteProcessAsync(attempt.FileName, attempt.Args, YtDlpTimeoutMs);
+                if (!result.Started)
+                {
+                    await LogAsync("warn", "youtube.runner.unavailable", requestId, new
+                    {
+                        mode = attempt.Mode,
+                        runner = attempt.Runner,
+                        executable = attempt.FileName,
+                        result.StartError
+                    });
+                    await LogYouTubeDebugAsync("youtube.runner.unavailable", requestId, new
+                    {
+                        mode = attempt.Mode,
+                        runner = attempt.Runner,
+                        executable = attempt.FileName,
+                        result.StartError
+                    });
+                    lastResult = result;
+                    continue;
+                }
+
+                await LogAsync("info", "youtube.ytdlp.process.exit", requestId, new
+                {
+                    mode = attempt.Mode,
+                    cliParity = attempt.CliParity,
+                    includesCookieHeader = attempt.IncludesCookieHeader,
+                    cookiesFromBrowser = attempt.CookiesFromBrowser ?? string.Empty,
+                    runner = attempt.Runner,
+                    result.ExitCode,
+                    stdout = result.Stdout,
+                    stderr = result.Stderr
+                });
+                await LogYouTubeDebugAsync("youtube.ytdlp.process.exit", requestId, new
+                {
+                    mode = attempt.Mode,
+                    cliParity = attempt.CliParity,
+                    includesCookieHeader = attempt.IncludesCookieHeader,
+                    cookiesFromBrowser = attempt.CookiesFromBrowser ?? string.Empty,
+                    runner = attempt.Runner,
+                    result.ExitCode,
+                    stdout = result.Stdout,
+                    stderr = result.Stderr
+                });
+
+                if (result.ExitCode == 0)
+                {
+                    lastResult = result;
+                    runnerUsed = attempt.Runner;
+                    modeUsed = attempt.Mode;
+                    break;
+                }
+
+                await LogAsync("warn", "youtube.runner.failed", requestId, new
+                {
+                    mode = attempt.Mode,
+                    cliParity = attempt.CliParity,
+                    includesCookieHeader = attempt.IncludesCookieHeader,
+                    cookiesFromBrowser = attempt.CookiesFromBrowser ?? string.Empty,
+                    runner = attempt.Runner,
+                    result.ExitCode,
+                    output = Tail(result.CombinedOutput, 3000)
+                });
+                lastResult = result;
+            }
+
+            if (lastResult == null || (!lastResult.Value.Started && string.IsNullOrWhiteSpace(runnerUsed)))
+            {
+                return AddRequestId(new NativeMessage
+                {
+                    Type = "error",
+                    Payload = new Dictionary<string, object>
+                    {
+                        { "message", "yt-dlp runtime was not found. Install yt-dlp or python/py + yt_dlp, then restart Chrome." },
+                        { "code", "YTDLP_NOT_FOUND" },
+                        { "triedRunners", runnerSpecs.Select(r => r.DisplayName).ToArray() }
+                    }
+                }, requestId);
+            }
+
+            var finalResult = lastResult.Value;
+
+            if (string.IsNullOrWhiteSpace(runnerUsed))
+            {
+                return AddRequestId(new NativeMessage
+                {
+                    Type = "error",
+                    Payload = new Dictionary<string, object>
+                    {
+                        { "message", $"yt-dlp download failed. {Tail(finalResult.CombinedOutput, 2200)}" },
+                        { "code", "YTDLP_DOWNLOAD_FAILED" }
+                    }
+                }, requestId);
+            }
+
+            var outputPath = TryExtractOutputPath(finalResult.CombinedOutput, saveDir)
+                ?? ResolveLikelyOutputPath(saveDir, fileName, title);
+            var resolvedFileName = !string.IsNullOrWhiteSpace(outputPath)
+                ? Path.GetFileName(outputPath)
+                : BuildFallbackFileName(fileName, title);
+
+            var fileExists = !string.IsNullOrWhiteSpace(outputPath) && File.Exists(outputPath);
+            var fileSize = fileExists ? new FileInfo(outputPath!).Length : 0L;
+            string? writeFileError = null;
+            var fileWritable = fileExists && IsFileWritable(outputPath!, out writeFileError);
+
+            await LogAsync("info", "youtube.output.verify", requestId, new
+            {
+                outputPath = outputPath ?? string.Empty,
+                fileExists,
+                fileSize,
+                fileWritable,
+                writeFileError = writeFileError ?? string.Empty
+            });
+            await LogYouTubeDebugAsync("youtube.output.verify", requestId, new
+            {
+                outputPath = outputPath ?? string.Empty,
+                fileExists,
+                fileSize,
+                fileWritable,
+                writeFileError = writeFileError ?? string.Empty
+            });
+
+            if (!fileExists)
+            {
+                return AddRequestId(new NativeMessage
+                {
+                    Type = "error",
+                    Payload = new Dictionary<string, object>
+                    {
+                        { "message", "yt-dlp reported success but output file was not found at expected path." },
+                        { "code", "YTDLP_OUTPUT_NOT_FOUND" },
+                        { "expectedPath", outputPath ?? string.Empty }
+                    }
+                }, requestId);
+            }
+
+            await LogAsync("info", "youtube.download.complete", requestId, new
+            {
+                videoUrl,
+                runner = runnerUsed,
+                mode = modeUsed ?? string.Empty,
+                outputPath = outputPath ?? string.Empty,
+                quality = quality ?? string.Empty
+            });
+
+            return AddRequestId(new NativeMessage
+            {
+                Type = "download_added",
+                Payload = new Dictionary<string, object>
+                {
+                    { "downloadId", Guid.NewGuid().ToString("N") },
+                    { "fileName", resolvedFileName },
+                    { "status", "Complete" },
+                    { "quality", quality ?? string.Empty },
+                    { "source", "yt-dlp" },
+                    { "runner", runnerUsed },
+                    { "mode", modeUsed ?? string.Empty },
+                    { "outputPath", outputPath ?? string.Empty },
+                    { "fileExists", fileExists },
+                    { "fileSize", fileSize },
+                    { "fileWritable", fileWritable }
+                }
+            }, requestId);
+        }
+        catch (Exception ex)
+        {
+            await LogAsync("error", "youtube.download.failed", requestId, new
+            {
+                videoUrl,
+                exception = ex.GetType().Name,
+                ex.Message
+            });
+
+            return AddRequestId(new NativeMessage
+            {
+                Type = "error",
+                Payload = new Dictionary<string, object>
+                {
+                    { "message", ex.Message },
+                    { "code", "YOUTUBE_DOWNLOAD_FAILED" }
+                }
+            }, requestId);
+        }
+    }
+
+    private static bool IsYouTubePageUrl(string url)
+    {
+        try
+        {
+            var host = new Uri(url).Host.ToLowerInvariant();
+            return host.EndsWith("youtube.com")
+                || host == "youtu.be"
+                || host == "m.youtube.com"
+                || host.EndsWith("youtube-nocookie.com");
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static string? NormalizeYouTubeUrl(string? inputUrl)
+    {
+        if (string.IsNullOrWhiteSpace(inputUrl))
+        {
+            return null;
+        }
+
+        Uri parsed;
+        try
+        {
+            parsed = new Uri(inputUrl);
+        }
+        catch
+        {
+            return null;
+        }
+
+        var host = parsed.Host.ToLowerInvariant();
+        var isYoutubeHost = host.EndsWith("youtube.com")
+            || host == "youtu.be"
+            || host == "m.youtube.com"
+            || host.EndsWith("youtube-nocookie.com");
+        if (!isYoutubeHost)
+        {
+            return null;
+        }
+
+        static string ToWatchUrl(string id) => $"https://www.youtube.com/watch?v={Uri.EscapeDataString(id)}";
+
+        if (host == "youtu.be")
+        {
+            var id = parsed.AbsolutePath.Trim('/').Split('/').FirstOrDefault();
+            return string.IsNullOrWhiteSpace(id) ? null : ToWatchUrl(id);
+        }
+
+        if (parsed.AbsolutePath.Equals("/redirect", StringComparison.OrdinalIgnoreCase))
+        {
+            var q = GetQueryParam(parsed.Query, "q");
+            return NormalizeYouTubeUrl(q);
+        }
+
+        if (parsed.AbsolutePath.Equals("/watch", StringComparison.OrdinalIgnoreCase))
+        {
+            var id = GetQueryParam(parsed.Query, "v");
+            return string.IsNullOrWhiteSpace(id) ? null : ToWatchUrl(id);
+        }
+
+        var parts = parsed.AbsolutePath.Trim('/').Split('/', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length >= 2 &&
+            (parts[0].Equals("shorts", StringComparison.OrdinalIgnoreCase)
+            || parts[0].Equals("embed", StringComparison.OrdinalIgnoreCase)
+            || parts[0].Equals("live", StringComparison.OrdinalIgnoreCase)))
+        {
+            return ToWatchUrl(parts[1]);
+        }
+
+        // Keep unknown YouTube URL shapes (playlist, channel live pages, etc.) so yt-dlp can try them.
+        return parsed.GetComponents(UriComponents.SchemeAndServer | UriComponents.PathAndQuery, UriFormat.UriEscaped);
+    }
+
+    private static string? GetQueryParam(string query, string key)
+    {
+        if (string.IsNullOrWhiteSpace(query))
+        {
+            return null;
+        }
+
+        var trim = query.TrimStart('?');
+        var pairs = trim.Split('&', StringSplitOptions.RemoveEmptyEntries);
+        foreach (var pair in pairs)
+        {
+            var idx = pair.IndexOf('=');
+            if (idx <= 0)
+            {
+                continue;
+            }
+
+            var k = Uri.UnescapeDataString(pair[..idx]);
+            if (!k.Equals(key, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            return Uri.UnescapeDataString(pair[(idx + 1)..]);
+        }
+
+        return null;
+    }
+
+    private static bool IsDirectoryWritable(string directoryPath, out string? error)
+    {
+        try
+        {
+            Directory.CreateDirectory(directoryPath);
+            var probePath = Path.Combine(directoryPath, $".mydm_write_probe_{Guid.NewGuid():N}.tmp");
+            File.WriteAllText(probePath, "probe");
+            File.Delete(probePath);
+            error = null;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+            return false;
+        }
+    }
+
+    private static bool IsFileWritable(string filePath, out string? error)
+    {
+        try
+        {
+            using var stream = new FileStream(filePath, FileMode.Open, FileAccess.ReadWrite, FileShare.Read);
+            error = null;
+            return stream.CanWrite;
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+            return false;
+        }
+    }
+
+    private static string ResolveVideoSaveDirectory()
+    {
+        var basePath = _repository?.GetSetting("DefaultSavePath")
+            ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads", "MyDM");
+
+        var videoFolder = _repository?
+            .GetCategories()
+            .FirstOrDefault(c => string.Equals(c.Name, "Video", StringComparison.OrdinalIgnoreCase))
+            ?.SaveFolder;
+
+        var targetFolder = string.IsNullOrWhiteSpace(videoFolder) ? "Videos" : videoFolder;
+        var invalidChars = Path.GetInvalidFileNameChars();
+        var safeFolder = new string(targetFolder.Select(ch => invalidChars.Contains(ch) ? '_' : ch).ToArray());
+        return Path.Combine(basePath, safeFolder);
+    }
+
+    private static string BuildYouTubeOutputTemplate(string saveDir, string? fileName, string? title)
+    {
+        var preferredName = !string.IsNullOrWhiteSpace(fileName)
+            ? Path.GetFileNameWithoutExtension(fileName)
+            : !string.IsNullOrWhiteSpace(title)
+                ? title
+                : null;
+
+        if (!string.IsNullOrWhiteSpace(preferredName))
+        {
+            var safeBase = UrlHelper.SanitizeFileName(preferredName).Replace("%", "_");
+            return Path.Combine(saveDir, $"{safeBase}.%(ext)s");
+        }
+
+        return Path.Combine(saveDir, "%(title).180B [%(id)s].%(ext)s");
+    }
+
+    private static string BuildYouTubeFormatSelector(string? quality)
+    {
+        if (string.IsNullOrWhiteSpace(quality))
+        {
+            return "best[ext=mp4][vcodec!=none][acodec!=none]/best[vcodec!=none][acodec!=none]/best";
+        }
+
+        var digits = new string(quality.Where(char.IsDigit).ToArray());
+        if (!int.TryParse(digits, out var maxHeight) || maxHeight <= 0)
+        {
+            return "best[ext=mp4][vcodec!=none][acodec!=none]/best[vcodec!=none][acodec!=none]/best";
+        }
+
+        return $"best[height<={maxHeight}][ext=mp4][vcodec!=none][acodec!=none]/best[height<={maxHeight}][vcodec!=none][acodec!=none]/best[ext=mp4][vcodec!=none][acodec!=none]/best[vcodec!=none][acodec!=none]/best";
+    }
+
+    private static List<string> BuildYtDlpArgs(
+        string videoUrl,
+        string outputTemplate,
+        string formatSelector,
+        string? referrer,
+        IReadOnlyDictionary<string, string>? headers,
+        bool includeCookieHeader,
+        string? cookiesFromBrowser)
+    {
+        var args = new List<string>
+        {
+            "--no-playlist",
+            "--ignore-config",
+            "--verbose",
+            "--no-progress",
+            "--newline",
+            "--restrict-filenames",
+            "--print", "after_move:filepath",
+            "-o", outputTemplate,
+            "-f", formatSelector
+        };
+
+        if (!string.IsNullOrWhiteSpace(cookiesFromBrowser))
+        {
+            args.Add("--cookies-from-browser");
+            args.Add(cookiesFromBrowser);
+        }
+
+        if (!string.IsNullOrWhiteSpace(referrer))
+        {
+            args.Add("--referer");
+            args.Add(referrer);
+        }
+        else
+        {
+            args.Add("--referer");
+            args.Add("https://www.youtube.com/");
+        }
+
+        var allHeaders = headers != null
+            ? new Dictionary<string, string>(headers, StringComparer.OrdinalIgnoreCase)
+            : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        if (!allHeaders.ContainsKey("Origin"))
+        {
+            allHeaders["Origin"] = "https://www.youtube.com";
+        }
+
+        foreach (var header in allHeaders)
+        {
+            if (string.IsNullOrWhiteSpace(header.Value))
+            {
+                continue;
+            }
+
+            if (string.Equals(header.Key, "User-Agent", StringComparison.OrdinalIgnoreCase))
+            {
+                args.Add("--user-agent");
+                args.Add(header.Value);
+                continue;
+            }
+
+            if (string.Equals(header.Key, "Referer", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (!includeCookieHeader &&
+                string.Equals(header.Key, "Cookie", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            args.Add("--add-header");
+            args.Add($"{header.Key}:{header.Value}");
+        }
+
+        args.Add(videoUrl);
+        return args;
+    }
+
+    private static IReadOnlyList<YtDlpRunnerSpec> ResolveYtDlpRunnerSpecs()
+    {
+        var runners = new List<YtDlpRunnerSpec>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        static string MakeKey(string executable, IReadOnlyList<string> prefixArgs)
+            => $"{executable}|{string.Join(" ", prefixArgs)}";
+
+        void AddRunner(string executable, IReadOnlyList<string> prefixArgs, string displayName)
+        {
+            if (string.IsNullOrWhiteSpace(executable))
+            {
+                return;
+            }
+
+            var key = MakeKey(executable, prefixArgs);
+            if (!seen.Add(key))
+            {
+                return;
+            }
+
+            runners.Add(new YtDlpRunnerSpec(executable, prefixArgs, displayName));
+        }
+
+        AddRunner("yt-dlp", Array.Empty<string>(), "yt-dlp");
+        AddRunner("yt-dlp.exe", Array.Empty<string>(), "yt-dlp.exe");
+        AddRunner("python", new[] { "-m", "yt_dlp" }, "python -m yt_dlp");
+        AddRunner("py", new[] { "-m", "yt_dlp" }, "py -m yt_dlp");
+
+        foreach (var discovered in DiscoverYtDlpExecutables())
+        {
+            AddRunner(discovered, Array.Empty<string>(), discovered);
+        }
+
+        return runners;
+    }
+
+    private static IReadOnlyList<string> DiscoverYtDlpExecutables()
+    {
+        var found = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        void AddIfExists(string? path)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                return;
+            }
+
+            try
+            {
+                if (File.Exists(path))
+                {
+                    found.Add(path);
+                }
+            }
+            catch
+            {
+                // ignore bad candidate path
+            }
+        }
+
+        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+        var userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+
+        AddIfExists(Environment.GetEnvironmentVariable("YTDLP_PATH"));
+        AddIfExists(Path.Combine(AppContext.BaseDirectory, "yt-dlp.exe"));
+        AddIfExists(Path.Combine(localAppData, "Microsoft", "WinGet", "Links", "yt-dlp.exe"));
+        AddIfExists(Path.Combine(userProfile, "scoop", "shims", "yt-dlp.exe"));
+
+        void AddPythonScriptsCandidates(string rootDir)
+        {
+            if (string.IsNullOrWhiteSpace(rootDir) || !Directory.Exists(rootDir))
+            {
+                return;
+            }
+
+            try
+            {
+                foreach (var pythonDir in Directory.EnumerateDirectories(rootDir, "Python*"))
+                {
+                    AddIfExists(Path.Combine(pythonDir, "Scripts", "yt-dlp.exe"));
+                }
+            }
+            catch
+            {
+                // ignore directory scan failures
+            }
+        }
+
+        AddPythonScriptsCandidates(Path.Combine(localAppData, "Programs", "Python"));
+        AddPythonScriptsCandidates(Path.Combine(appData, "Python"));
+
+        return found.ToArray();
+    }
+
+    private static string BuildFallbackFileName(string? fileName, string? title)
+    {
+        if (!string.IsNullOrWhiteSpace(fileName))
+        {
+            return UrlHelper.SanitizeFileName(Path.GetFileName(fileName));
+        }
+
+        if (!string.IsNullOrWhiteSpace(title))
+        {
+            return UrlHelper.SanitizeFileName(title) + ".mp4";
+        }
+
+        return "youtube_video.mp4";
+    }
+
+    private static string? ResolveLikelyOutputPath(string saveDir, string? fileName, string? title)
+    {
+        try
+        {
+            if (!Directory.Exists(saveDir))
+            {
+                return null;
+            }
+
+            var preferredName = !string.IsNullOrWhiteSpace(fileName)
+                ? Path.GetFileNameWithoutExtension(fileName)
+                : !string.IsNullOrWhiteSpace(title)
+                    ? title
+                    : null;
+
+            if (!string.IsNullOrWhiteSpace(preferredName))
+            {
+                var safeBase = UrlHelper.SanitizeFileName(preferredName).Replace("%", "_");
+                var files = Directory.GetFiles(saveDir, $"{safeBase}.*", SearchOption.TopDirectoryOnly);
+                var newest = files
+                    .Select(path => new FileInfo(path))
+                    .OrderByDescending(info => info.LastWriteTimeUtc)
+                    .FirstOrDefault();
+                if (newest != null)
+                {
+                    return newest.FullName;
+                }
+            }
+
+            var fallbackNewest = Directory.GetFiles(saveDir, "*.*", SearchOption.TopDirectoryOnly)
+                .Select(path => new FileInfo(path))
+                .OrderByDescending(info => info.LastWriteTimeUtc)
+                .FirstOrDefault();
+            return fallbackNewest?.FullName;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static string? TryExtractOutputPath(string processOutput, string saveDir)
+    {
+        var lines = processOutput
+            .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+            .Select(line => line.Trim())
+            .Where(line => !string.IsNullOrWhiteSpace(line))
+            .ToArray();
+
+        for (var i = lines.Length - 1; i >= 0; i--)
+        {
+            var line = lines[i];
+
+            // after_move:filepath prints the final absolute path as a plain line
+            if (Path.IsPathRooted(line))
+            {
+                if (File.Exists(line))
+                {
+                    return line;
+                }
+
+                continue;
+            }
+
+            var combined = Path.Combine(saveDir, line);
+            if (File.Exists(combined))
+            {
+                return combined;
+            }
+        }
+
+        return null;
+    }
+
+    private static string BuildCommandLineForLog(string fileName, IReadOnlyList<string> args)
+    {
+        var quotedArgs = args.Select(arg =>
+        {
+            if (string.IsNullOrEmpty(arg))
+            {
+                return "\"\"";
+            }
+
+            if (arg.Contains(' ') || arg.Contains('"'))
+            {
+                return $"\"{arg.Replace("\"", "\\\"")}\"";
+            }
+
+            return arg;
+        });
+        return $"{fileName} {string.Join(" ", quotedArgs)}";
+    }
+
+    private static string Tail(string value, int maxLength)
+    {
+        if (string.IsNullOrEmpty(value))
+        {
+            return string.Empty;
+        }
+
+        return value.Length <= maxLength
+            ? value
+            : value[^maxLength..];
+    }
+
+    private static async Task<ProcessExecutionResult> ExecuteProcessAsync(
+        string fileName,
+        IReadOnlyList<string> args,
+        int timeoutMs)
+    {
+        var stdout = new StringBuilder();
+        var stderr = new StringBuilder();
+        using var process = new Process();
+        process.StartInfo = new ProcessStartInfo
+        {
+            FileName = fileName,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true
+        };
+
+        foreach (var arg in args)
+        {
+            process.StartInfo.ArgumentList.Add(arg);
+        }
+
+        process.OutputDataReceived += (_, eventArgs) =>
+        {
+            if (!string.IsNullOrWhiteSpace(eventArgs.Data))
+            {
+                stdout.AppendLine(eventArgs.Data);
+            }
+        };
+        process.ErrorDataReceived += (_, eventArgs) =>
+        {
+            if (!string.IsNullOrWhiteSpace(eventArgs.Data))
+            {
+                stderr.AppendLine(eventArgs.Data);
+            }
+        };
+
+        try
+        {
+            if (!process.Start())
+            {
+                return new ProcessExecutionResult(false, -1, stdout.ToString(), stderr.ToString(), "Process failed to start.");
+            }
+        }
+        catch (Win32Exception ex)
+        {
+            return new ProcessExecutionResult(false, -1, stdout.ToString(), stderr.ToString(), ex.Message);
+        }
+
+        process.BeginOutputReadLine();
+        process.BeginErrorReadLine();
+
+        using var timeoutCts = new CancellationTokenSource(timeoutMs);
+        try
+        {
+            await process.WaitForExitAsync(timeoutCts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            try
+            {
+                if (!process.HasExited)
+                {
+                    process.Kill(entireProcessTree: true);
+                }
+            }
+            catch
+            {
+                // ignore kill errors
+            }
+
+            return new ProcessExecutionResult(true, -1, stdout.ToString(), stderr.ToString(), $"Process timed out after {timeoutMs / 1000}s.");
+        }
+
+        return new ProcessExecutionResult(true, process.ExitCode, stdout.ToString(), stderr.ToString(), null);
+    }
+
+    private readonly record struct YtDlpRunnerSpec(
+        string Executable,
+        IReadOnlyList<string> PrefixArgs,
+        string DisplayName);
+
+    private readonly record struct ProcessExecutionResult(
+        bool Started,
+        int ExitCode,
+        string Stdout,
+        string Stderr,
+        string? StartError)
+    {
+        public string CombinedOutput => string.Join(
+            Environment.NewLine,
+            new[] { Stdout, Stderr }.Where(part => !string.IsNullOrWhiteSpace(part)));
+    }
+
     private static NativeMessage HandleGetStatus(NativeMessage message, string requestId)
     {
         var downloadId = GetPayloadString(message, "downloadId");
@@ -735,6 +1741,33 @@ internal static class Program
         try
         {
             await File.AppendAllTextAsync(_logPath, line + Environment.NewLine);
+        }
+        finally
+        {
+            _logLock.Release();
+        }
+    }
+
+    private static async Task LogYouTubeDebugAsync(string eventName, string? requestId = null, object? data = null)
+    {
+        if (string.IsNullOrWhiteSpace(_ytDebugLogPath))
+        {
+            return;
+        }
+
+        var entry = new Dictionary<string, object?>
+        {
+            ["ts"] = DateTime.UtcNow.ToString("O"),
+            ["event"] = eventName,
+            ["requestId"] = requestId,
+            ["data"] = data
+        };
+
+        var line = JsonSerializer.Serialize(entry);
+        await _logLock.WaitAsync();
+        try
+        {
+            await File.AppendAllTextAsync(_ytDebugLogPath, line + Environment.NewLine);
         }
         finally
         {

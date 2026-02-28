@@ -29,6 +29,10 @@ public partial class App : System.Windows.Application
         // Initialize engine
         _engine = new DownloadEngine(repository);
         _engine.RestoreState();
+        if (long.TryParse(repository.GetSetting("GlobalSpeedLimit"), out var globalSpeedKb) && globalSpeedKb >= 0)
+        {
+            _engine.SpeedLimiter.GlobalLimit = globalSpeedKb * 1024;
+        }
 
         // Initialize queue manager
         _queueManager = new QueueManager(_engine, repository);

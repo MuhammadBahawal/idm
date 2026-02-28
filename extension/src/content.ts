@@ -8,6 +8,7 @@ interface MediaQuality {
 interface RuntimeResponse {
     success?: boolean;
     error?: string;
+    rawError?: string;
     connected?: boolean;
     disconnectReason?: string;
     requestId?: string;
@@ -17,6 +18,15 @@ interface RuntimeResponse {
     mimeType?: string;
     muxed?: boolean;
     qualities?: StreamQualityOption[];
+    nativeType?: string;
+    outputPath?: string;
+    fileName?: string;
+    runner?: string;
+    mode?: string;
+}
+
+interface SendDownloadOptions {
+    suppressErrorToast?: boolean;
 }
 
 interface StreamQualityOption {
@@ -187,7 +197,75 @@ function inferFileNameFromUrl(url: string, fallbackBase: string): string {
 
 function isYoutubePage(): boolean {
     const host = location.hostname.toLowerCase();
-    return host.includes("youtube.com") || host === "youtu.be" || host === "m.youtube.com";
+    return host.includes("youtube.com")
+        || host === "youtu.be"
+        || host === "m.youtube.com"
+        || host.endsWith("youtube-nocookie.com");
+}
+
+function buildCanonicalWatchUrl(videoId: string): string {
+    return `https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}`;
+}
+
+function extractVideoIdFromPath(pathname: string, segmentIndex: number): string | null {
+    const parts = pathname.split("/").filter(Boolean);
+    if (parts.length <= segmentIndex) return null;
+    const value = parts[segmentIndex].trim();
+    return value.length > 0 ? value : null;
+}
+
+function normalizeYoutubeLikeUrl(input: string): string | null {
+    let parsed: URL;
+    try {
+        parsed = new URL(input);
+    } catch {
+        return null;
+    }
+
+    const host = parsed.hostname.toLowerCase();
+    if (!(host.endsWith("youtube.com")
+        || host === "youtu.be"
+        || host === "m.youtube.com"
+        || host.endsWith("youtube-nocookie.com"))) {
+        return null;
+    }
+
+    if (host === "youtu.be") {
+        const id = extractVideoIdFromPath(parsed.pathname, 0);
+        return id ? buildCanonicalWatchUrl(id) : null;
+    }
+
+    if (parsed.pathname === "/redirect") {
+        const q = parsed.searchParams.get("q");
+        if (!q) return null;
+        return normalizeYoutubeLikeUrl(q);
+    }
+
+    if (parsed.pathname === "/watch") {
+        const id = parsed.searchParams.get("v");
+        return id ? buildCanonicalWatchUrl(id) : null;
+    }
+
+    if (parsed.pathname.startsWith("/shorts/")) {
+        const id = extractVideoIdFromPath(parsed.pathname, 1);
+        return id ? buildCanonicalWatchUrl(id) : null;
+    }
+
+    if (parsed.pathname.startsWith("/embed/")) {
+        const id = extractVideoIdFromPath(parsed.pathname, 1);
+        return id ? buildCanonicalWatchUrl(id) : null;
+    }
+
+    if (parsed.pathname.startsWith("/live/")) {
+        const id = extractVideoIdFromPath(parsed.pathname, 1);
+        return id ? buildCanonicalWatchUrl(id) : null;
+    }
+
+    return parsed.toString();
+}
+
+function getCanonicalYoutubeVideoUrl(): string | null {
+    return normalizeYoutubeLikeUrl(location.href) || location.href;
 }
 
 async function resolveFallbackVideoSource(): Promise<RuntimeResponse | null> {
@@ -394,7 +472,23 @@ function showNotification(text: string, isError = false): void {
     }, 3000);
 }
 
-async function sendDownloadToBackground(payload: Record<string, unknown>): Promise<boolean> {
+function isUnsupportedMessageTypeError(error: string | undefined, messageType: string): boolean {
+    if (!error || !messageType) return false;
+    return error.includes(`Unsupported message type: ${messageType}`);
+}
+
+function isConfirmedYoutubeDownloadResult(response: RuntimeResponse | null | undefined): boolean {
+    if (!response?.success) return false;
+    const hasOutputPath = typeof response.outputPath === "string" && response.outputPath.trim().length > 0;
+    const hasRunner = typeof response.runner === "string" && response.runner.trim().length > 0;
+    const hasMode = typeof response.mode === "string" && response.mode.trim().length > 0;
+    return hasOutputPath || hasRunner || hasMode;
+}
+
+async function sendDownloadToBackground(
+    payload: Record<string, unknown>,
+    options: SendDownloadOptions = {}
+): Promise<RuntimeResponse> {
     const requestId = genRequestId("dl");
     try {
         const response = await sendRuntimeMessage<RuntimeResponse>({
@@ -403,14 +497,87 @@ async function sendDownloadToBackground(payload: Record<string, unknown>): Promi
             headers: buildRequestHeaders()
         });
         if (response?.success) {
-            return true;
+            return response;
         }
-        showNotification(`❌ ${response?.error || "Unable to send download to MyDM"}`, true);
-        return false;
+        const rawError = response?.error || "Unable to send download to MyDM";
+        const isStaleBackground = rawError.includes("Unsupported message type: download_youtube");
+        const finalError = isStaleBackground
+            ? "Extension is outdated in this tab. Reload MyDM extension, refresh YouTube tab, and restart Chrome."
+            : rawError;
+        log("error", "download_request_rejected", {
+            requestId,
+            payloadType: typeof payload.type === "string" ? payload.type : "unknown",
+            rawError,
+            finalError
+        });
+        if (!options.suppressErrorToast) {
+            showNotification(`ERROR: ${finalError}`, true);
+        }
+        return {
+            ...(response || {}),
+            success: false,
+            error: finalError,
+            rawError
+        };
     } catch (error) {
-        showNotification(`❌ ${String(error)}`, true);
-        return false;
+        const rawError = String(error);
+        if (!options.suppressErrorToast) {
+            showNotification(`ERROR: ${rawError}`, true);
+        }
+        return { success: false, error: rawError, rawError };
     }
+}
+
+async function sendYoutubeDownloadWithCompatibility(
+    youtubeUrl: string,
+    fileName: string,
+    clickTsIso: string,
+    detectedVideoUrlAtClick: string
+): Promise<RuntimeResponse> {
+    const commonPayload = {
+        youtubeUrl,
+        filename: fileName,
+        title: document.title,
+        quality: "best",
+        pageUrl: location.href,
+        streamSource: "gui-overlay",
+        clickTsIso,
+        detectedVideoUrl: detectedVideoUrlAtClick || "",
+        canonicalYoutubeUrl: youtubeUrl
+    };
+
+    const direct = await sendDownloadToBackground(
+        {
+            type: "download_youtube",
+            url: detectedVideoUrlAtClick || "",
+            ...commonPayload
+        },
+        { suppressErrorToast: true }
+    );
+    if (direct.success) {
+        return direct;
+    }
+
+    const directRawError = direct.rawError || direct.error;
+    if (!isUnsupportedMessageTypeError(directRawError, "download_youtube")) {
+        return direct;
+    }
+
+    log("warn", "gui.youtube.compat_legacy_fallback", {
+        pageUrl: location.href,
+        youtubeUrl,
+        firstError: directRawError || ""
+    });
+
+    // Compatibility path for stale service workers that do not know download_youtube.
+    return sendDownloadToBackground(
+        {
+            type: "download_with_mydm",
+            url: youtubeUrl,
+            ...commonPayload
+        },
+        { suppressErrorToast: true }
+    );
 }
 
 async function showQualityModal(manifestUrl: string, mediaType: "hls" | "dash"): Promise<void> {
@@ -429,13 +596,13 @@ async function showQualityModal(manifestUrl: string, mediaType: "hls" | "dash"):
     }
 
     if (qualities.length === 0) {
-        const ok = await sendDownloadToBackground({
+        const result = await sendDownloadToBackground({
             type: "download_media",
             manifestUrl,
             mediaType,
             title: document.title
         });
-        if (ok) showNotification("✅ Sent to MyDM");
+        if (result.success) showNotification("Sent to MyDM");
         return;
     }
 
@@ -444,7 +611,7 @@ async function showQualityModal(manifestUrl: string, mediaType: "hls" | "dash"):
 
     const header = document.createElement("div");
     header.className = "mydm-modal-header";
-    header.innerHTML = "<span>⬇ MyDM - Select Quality</span><button class=\"mydm-modal-close\">✕</button>";
+    header.innerHTML = "<span>MyDM - Select Quality</span><button class=\"mydm-modal-close\">x</button>";
     modal.appendChild(header);
 
     const list = document.createElement("div");
@@ -458,15 +625,15 @@ async function showQualityModal(manifestUrl: string, mediaType: "hls" | "dash"):
             ${q.codecs ? `<span class="mydm-q-codecs">${q.codecs}</span>` : ""}
         `;
         item.addEventListener("click", async () => {
-            const ok = await sendDownloadToBackground({
+            const result = await sendDownloadToBackground({
                 type: "download_media",
                 manifestUrl: q.url,
                 mediaType,
                 quality: q.resolution,
                 title: document.title
             });
-            if (ok) {
-                showNotification(`✅ Downloading ${q.resolution} with MyDM`);
+            if (result.success) {
+                showNotification(`Downloading ${q.resolution} with MyDM`);
             }
             modal.remove();
             backdrop.remove();
@@ -590,7 +757,7 @@ function injectVideoOverlay(video: HTMLVideoElement): void {
 
     const button = document.createElement("button");
     button.className = "mydm-btn";
-    button.textContent = "⬇ MyDM";
+    button.textContent = "Download MyDM";
     button.title = "Download with MyDM";
     shadow.appendChild(button);
 
@@ -673,8 +840,16 @@ function injectVideoOverlay(video: HTMLVideoElement): void {
     button.addEventListener("click", async (event: MouseEvent) => {
         event.stopPropagation();
         event.preventDefault();
+        const clickTsIso = new Date().toISOString();
+        const detectedVideoUrlAtClick = getMediaUrl(video);
 
-        // Log connection status but DON'T block — chrome.downloads fallback works without NativeHost
+        log("info", "gui.icon_click", {
+            clickTsIso,
+            pageUrl: location.href,
+            detectedVideoUrlAtClick: detectedVideoUrlAtClick || ""
+        });
+
+        // Log connection status but do not block - chrome.downloads fallback works without NativeHost.
         try {
             const status = await sendRuntimeMessage<RuntimeResponse>({ type: "get_connection_status" });
             if (!status?.connected) {
@@ -686,11 +861,48 @@ function injectVideoOverlay(video: HTMLVideoElement): void {
             log("warn", "connection_precheck_failed", { error: String(err) });
         }
 
-        let url = getMediaUrl(video);
+        let url = detectedVideoUrlAtClick;
         let resolvedQuality: string | undefined;
         let resolvedMimeType: string | undefined;
         let resolvedMuxed = true;
         let resolvedAudioUrl: string | undefined;
+        let youtubeRouteError = "";
+
+        if (isYoutubePage()) {
+            const youtubeUrl = getCanonicalYoutubeVideoUrl();
+            if (!youtubeUrl) {
+                showNotification("Unable to resolve YouTube video URL", true);
+                return;
+            }
+
+            log("info", "gui.youtube_url_resolved", {
+                clickTsIso,
+                pageUrl: location.href,
+                detectedVideoUrlAtClick: detectedVideoUrlAtClick || "",
+                canonicalYoutubeUrl: youtubeUrl
+            });
+
+            const ytFilename = `${sanitizeFileName(document.title || "youtube_video")}.mp4`;
+            const result = await sendYoutubeDownloadWithCompatibility(
+                youtubeUrl,
+                ytFilename,
+                clickTsIso,
+                detectedVideoUrlAtClick || ""
+            );
+            if (isConfirmedYoutubeDownloadResult(result)) {
+                const savedName = result.fileName || ytFilename;
+                showNotification(`Saved with yt-dlp: ${savedName}`);
+                return;
+            }
+            log("warn", "gui.youtube.direct_failed_trying_stream_fallback", {
+                pageUrl: location.href,
+                youtubeUrl,
+                error: result.error || "",
+                unverifiedSuccess: !!result.success
+            });
+            youtubeRouteError = result.error || "";
+            showNotification("Direct YouTube mode failed, trying stream fallback...");
+        }
 
         log("info", "download_button_clicked", {
             rawUrl: url,
@@ -699,7 +911,7 @@ function injectVideoOverlay(video: HTMLVideoElement): void {
         });
 
         if (!isHttpUrl(url)) {
-            showNotification("🔍 Finding downloadable stream…");
+            showNotification("Finding downloadable stream...");
 
             // Ask inject.ts (MAIN world) to re-scan and re-broadcast URLs NOW
             try {
@@ -739,7 +951,11 @@ function injectVideoOverlay(video: HTMLVideoElement): void {
         }
 
         if (!isHttpUrl(url)) {
-            showNotification("⚠ No downloadable stream found. Let the video play for a few seconds, then try again.", true);
+            if (isYoutubePage() && youtubeRouteError.trim().length > 0) {
+                showNotification(`YouTube download failed: ${youtubeRouteError}`, true);
+            } else {
+                showNotification("No downloadable stream found. Let the video play for a few seconds, then try again.", true);
+            }
             return;
         }
 
@@ -769,10 +985,10 @@ function injectVideoOverlay(video: HTMLVideoElement): void {
         const qualitySuffix = resolvedQuality ? `_${sanitizeFileName(resolvedQuality).replace(/\s+/g, "")}` : "";
         const filename = `${sanitizeFileName(document.title || "video")}${qualitySuffix}.${extension}`;
 
-        let ok: boolean;
+        let result: RuntimeResponse;
         if (!resolvedMuxed && resolvedAudioUrl) {
             // Split video+audio streams — use download_video so NativeHost can mux them
-            ok = await sendDownloadToBackground({
+            result = await sendDownloadToBackground({
                 type: "download_video",
                 videoUrl: url,
                 audioUrl: resolvedAudioUrl,
@@ -781,16 +997,16 @@ function injectVideoOverlay(video: HTMLVideoElement): void {
             });
         } else {
             // Muxed stream or direct video — simple download
-            ok = await sendDownloadToBackground({
+            result = await sendDownloadToBackground({
                 type: "download_with_mydm",
                 url,
                 filename
             });
         }
 
-        if (ok) {
+        if (result.success) {
             const qualityText = resolvedQuality ? ` (${resolvedQuality})` : "";
-            showNotification(`✅ Sent to MyDM${qualityText}`);
+            showNotification(`Sent to MyDM${qualityText}`);
         }
     });
 
@@ -999,13 +1215,13 @@ function injectImageOverlay(image: HTMLImageElement): void {
         }
 
         const filename = inferFileNameFromUrl(imageUrl, "image_download");
-        const ok = await sendDownloadToBackground({
+        const result = await sendDownloadToBackground({
             type: "download_with_mydm",
             url: imageUrl,
             filename
         });
 
-        if (ok) {
+        if (result.success) {
             showNotification("Image sent to MyDM");
         }
     });
@@ -1198,7 +1414,7 @@ function installMutationObserver(): void {
     });
 }
 
-// Manifest detection — only checks DOM attributes, NOT network interception.
+// Manifest detection - only checks DOM attributes, not network interception.
 // Network interception is handled exclusively by inject.ts in the MAIN world.
 function installManifestRequestHooks(): void {
     // Check existing source elements for manifests
@@ -1219,7 +1435,7 @@ function installManifestRequestHooks(): void {
     });
 }
 
-// ──── MAIN world stream URL relay ────
+// MAIN world stream URL relay.
 // The inject.ts script (running in the page's MAIN world) sends captured
 // googlevideo.com / media URLs via window.postMessage. We listen here
 // (in the ISOLATED world) and forward them to the background service worker.

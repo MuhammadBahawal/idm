@@ -11,3 +11,6 @@ d:\idm\src\MyDM.Core\obj\Debug\net8.0\MyDM.Core.dll
 d:\idm\src\MyDM.Core\obj\Debug\net8.0\refint\MyDM.Core.dll
 d:\idm\src\MyDM.Core\obj\Debug\net8.0\MyDM.Core.pdb
 d:\idm\src\MyDM.Core\obj\Debug\net8.0\ref\MyDM.Core.dll
+d:\idm\artifacts\nativehost-check\MyDM.Core.deps.json
+d:\idm\artifacts\nativehost-check\MyDM.Core.dll
+d:\idm\artifacts\nativehost-check\MyDM.Core.pdb

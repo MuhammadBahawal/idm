@@ -41,3 +41,8 @@ d:\idm\src\MyDM.NativeHost\obj\Debug\net8.0\refint\MyDM.NativeHost.dll
 d:\idm\src\MyDM.NativeHost\obj\Debug\net8.0\MyDM.NativeHost.pdb
 d:\idm\src\MyDM.NativeHost\obj\Debug\net8.0\MyDM.NativeHost.genruntimeconfig.cache
 d:\idm\src\MyDM.NativeHost\obj\Debug\net8.0\ref\MyDM.NativeHost.dll
+d:\idm\artifacts\nativehost-check\MyDM.NativeHost.exe
+d:\idm\artifacts\nativehost-check\MyDM.NativeHost.deps.json
+d:\idm\artifacts\nativehost-check\MyDM.NativeHost.runtimeconfig.json
+d:\idm\artifacts\nativehost-check\MyDM.NativeHost.dll
+d:\idm\artifacts\nativehost-check\MyDM.NativeHost.pdb

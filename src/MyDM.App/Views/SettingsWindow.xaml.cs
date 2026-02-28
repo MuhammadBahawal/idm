@@ -1,5 +1,7 @@
 using System.Windows;
+using System.Windows.Controls;
 using MyDM.Core.Data;
+using MyDM.Core.Engine;
 using MyDM.Core.Media;
 using WinForms = System.Windows.Forms;
 
@@ -9,11 +11,13 @@ public partial class SettingsWindow : Window
 {
     private const string DefaultExtensionId = "gnpallpkcdihlckdkddppkhgblokapdj";
     private readonly DownloadRepository _repository;
+    private readonly DownloadEngine _engine;
 
-    public SettingsWindow(DownloadRepository repository)
+    public SettingsWindow(DownloadRepository repository, DownloadEngine engine)
     {
         InitializeComponent();
         _repository = repository;
+        _engine = engine;
         LoadSettings();
     }
 
@@ -27,6 +31,48 @@ public partial class SettingsWindow : Window
         TimeoutTextBox.Text = _repository.GetSetting("ConnectionTimeout") ?? "30";
         MaxRetriesTextBox.Text = _repository.GetSetting("MaxRetries") ?? "10";
         ExtensionIdTextBox.Text = _repository.GetSetting("ExtensionId") ?? DefaultExtensionId;
+        QueueScheduleStartTextBox.Text = _repository.GetSetting("QueueScheduleStart") ?? "09:00";
+        QueueScheduleStopTextBox.Text = _repository.GetSetting("QueueScheduleStop") ?? "18:00";
+        QueueScheduleDaysTextBox.Text = _repository.GetSetting("QueueScheduleDays") ?? "Mon,Tue,Wed,Thu,Fri";
+
+        AutoPopupCheckBox.IsChecked = ParseBool(_repository.GetSetting("AutoShowDownloadWindow"), defaultValue: true);
+        QueueScheduleEnabledCheckBox.IsChecked = ParseBool(_repository.GetSetting("QueueScheduleEnabled"), defaultValue: false);
+
+        SelectComboValue(MaxConcurrentCombo, _repository.GetSetting("MaxConcurrentDownloads") ?? "3");
+        SelectComboValue(DefaultConnectionsCombo, _repository.GetSetting("DefaultConnections") ?? "8");
+    }
+
+    private static void SelectComboValue(System.Windows.Controls.ComboBox comboBox, string value)
+    {
+        foreach (var item in comboBox.Items.OfType<System.Windows.Controls.ComboBoxItem>())
+        {
+            if (string.Equals(item.Content?.ToString(), value, StringComparison.OrdinalIgnoreCase))
+            {
+                comboBox.SelectedItem = item;
+                return;
+            }
+        }
+
+        if (comboBox.Items.Count > 0)
+        {
+            comboBox.SelectedIndex = 0;
+        }
+    }
+
+    private static string GetComboValue(System.Windows.Controls.ComboBox comboBox, string fallback)
+    {
+        return (comboBox.SelectedItem as System.Windows.Controls.ComboBoxItem)?.Content?.ToString() ?? fallback;
+    }
+
+    private static bool ParseBool(string? value, bool defaultValue)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return defaultValue;
+        }
+
+        return !string.Equals(value, "0", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(value, "false", StringComparison.OrdinalIgnoreCase);
     }
 
     private void BrowseDefaultPath_Click(object sender, RoutedEventArgs e)
@@ -62,12 +108,12 @@ public partial class SettingsWindow : Window
         var version = await muxer.GetVersionAsync();
         if (version != null)
         {
-            FfmpegStatusLabel.Content = $"OK: {version}";
+            FfmpegStatusLabel.Text = $"Status: OK - {version}";
             _repository.SetSetting("FfmpegPath", FfmpegPathTextBox.Text);
         }
         else
         {
-            FfmpegStatusLabel.Content = "ERROR: ffmpeg not found or not working";
+            FfmpegStatusLabel.Text = "Status: ERROR - ffmpeg not found or not working";
         }
     }
 
@@ -78,7 +124,7 @@ public partial class SettingsWindow : Window
             var hostPath = ResolveNativeHostPath();
             if (!File.Exists(hostPath))
             {
-                NativeHostStatus.Content = "ERROR: MyDM.NativeHost.exe not found. Build MyDM.NativeHost first.";
+                NativeHostStatus.Text = "ERROR: MyDM.NativeHost.exe not found. Build MyDM.NativeHost first.";
                 return;
             }
 
@@ -116,11 +162,11 @@ public partial class SettingsWindow : Window
                 key?.SetValue(string.Empty, manifestPath);
             }
 
-            NativeHostStatus.Content = $"OK: Native Host registered for extension {extensionId}";
+            NativeHostStatus.Text = $"OK: Native Host registered for extension {extensionId}";
         }
         catch (Exception ex)
         {
-            NativeHostStatus.Content = $"ERROR: {ex.Message}";
+            NativeHostStatus.Text = $"ERROR: {ex.Message}";
         }
     }
 
@@ -132,6 +178,18 @@ public partial class SettingsWindow : Window
         _repository.SetSetting("ConnectionTimeout", TimeoutTextBox.Text);
         _repository.SetSetting("MaxRetries", MaxRetriesTextBox.Text);
         _repository.SetSetting("ExtensionId", ExtensionIdTextBox.Text.Trim());
+        _repository.SetSetting("MaxConcurrentDownloads", GetComboValue(MaxConcurrentCombo, "3"));
+        _repository.SetSetting("DefaultConnections", GetComboValue(DefaultConnectionsCombo, "8"));
+        _repository.SetSetting("AutoShowDownloadWindow", AutoPopupCheckBox.IsChecked == true ? "1" : "0");
+        _repository.SetSetting("QueueScheduleEnabled", QueueScheduleEnabledCheckBox.IsChecked == true ? "1" : "0");
+        _repository.SetSetting("QueueScheduleStart", QueueScheduleStartTextBox.Text.Trim());
+        _repository.SetSetting("QueueScheduleStop", QueueScheduleStopTextBox.Text.Trim());
+        _repository.SetSetting("QueueScheduleDays", QueueScheduleDaysTextBox.Text.Trim());
+
+        if (long.TryParse(SpeedLimitTextBox.Text.Trim(), out var globalKbPerSec) && globalKbPerSec >= 0)
+        {
+            _engine.SpeedLimiter.GlobalLimit = globalKbPerSec * 1024;
+        }
 
         MessageBox.Show("Settings saved.", "MyDM", MessageBoxButton.OK, MessageBoxImage.Information);
     }

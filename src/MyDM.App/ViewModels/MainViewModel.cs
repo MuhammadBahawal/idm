@@ -13,10 +13,12 @@ namespace MyDM.App.ViewModels;
 
 public partial class MainViewModel : ObservableObject
 {
+    private const string CategorySeparator = "------------";
     private readonly DownloadEngine _engine;
     private readonly DownloadRepository _repository;
     private readonly QueueManager _queueManager;
     private readonly DispatcherTimer _refreshTimer;
+    private readonly Dictionary<string, Views.DownloadDetailsWindow> _detailWindows = new();
 
     [ObservableProperty] private string _selectedCategory = "All Downloads";
     [ObservableProperty] private DownloadItemViewModel? _selectedDownload;
@@ -28,7 +30,7 @@ public partial class MainViewModel : ObservableObject
     public ObservableCollection<string> Categories { get; } = new()
     {
         "All Downloads", "Video", "Music", "Documents", "Programs", "Compressed", "Others",
-        "─────────", "Unfinished", "Finished", "Queues"
+        CategorySeparator, "Unfinished", "Finished", "Queues"
     };
 
     public MainViewModel(DownloadEngine engine, DownloadRepository repository, QueueManager queueManager)
@@ -37,10 +39,10 @@ public partial class MainViewModel : ObservableObject
         _repository = repository;
         _queueManager = queueManager;
 
-        _engine.OnProgressUpdated += item => Application.Current.Dispatcher.Invoke(() => UpdateDownloadInList(item));
-        _engine.OnStatusChanged += item => Application.Current.Dispatcher.Invoke(() => UpdateDownloadInList(item));
+        _engine.OnProgressUpdated += OnEngineProgressUpdated;
+        _engine.OnStatusChanged += OnEngineStatusChanged;
 
-        _refreshTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
+        _refreshTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
         _refreshTimer.Tick += (_, _) => RefreshStats();
         _refreshTimer.Start();
 
@@ -91,8 +93,13 @@ public partial class MainViewModel : ObservableObject
 
         if (result == MessageBoxResult.Yes)
         {
-            _engine.DeleteDownload(SelectedDownload.Item.Id);
+            var downloadId = SelectedDownload.Item.Id;
+            _engine.DeleteDownload(downloadId);
             Downloads.Remove(SelectedDownload);
+            if (_detailWindows.TryGetValue(downloadId, out var window))
+            {
+                window.Close();
+            }
             StatusBarText = "Download deleted";
         }
     }
@@ -100,7 +107,7 @@ public partial class MainViewModel : ObservableObject
     [RelayCommand]
     private void OpenSettings()
     {
-        var settings = new Views.SettingsWindow(_repository);
+        var settings = new Views.SettingsWindow(_repository, _engine);
         settings.Owner = Application.Current.MainWindow;
         settings.ShowDialog();
     }
@@ -123,15 +130,30 @@ public partial class MainViewModel : ObservableObject
     private void ShowDetails()
     {
         if (SelectedDownload == null) return;
-        var details = new Views.DownloadDetailsWindow(SelectedDownload.Item, _repository);
-        details.Owner = Application.Current.MainWindow;
-        details.Show();
+        EnsureDetailsWindow(SelectedDownload.Item, forceOpen: true);
     }
 
     public void FilterByCategory(string category)
     {
         SelectedCategory = category;
         LoadDownloads();
+    }
+
+    private void OnEngineProgressUpdated(DownloadItem item)
+    {
+        Application.Current.Dispatcher.Invoke(() => UpdateDownloadInList(item));
+    }
+
+    private void OnEngineStatusChanged(DownloadItem item)
+    {
+        Application.Current.Dispatcher.Invoke(() =>
+        {
+            UpdateDownloadInList(item);
+            if (item.Status == DownloadStatus.Downloading)
+            {
+                EnsureDetailsWindow(item, forceOpen: false);
+            }
+        });
     }
 
     private void LoadDownloads()
@@ -143,7 +165,7 @@ public partial class MainViewModel : ObservableObject
             "Unfinished" => _engine.GetAllDownloads().Where(d => d.Status != DownloadStatus.Complete).ToList(),
             "Finished" => _engine.GetAllDownloads().Where(d => d.Status == DownloadStatus.Complete).ToList(),
             "Queues" => _engine.GetAllDownloads().Where(d => d.Status == DownloadStatus.Queued).ToList(),
-            "─────────" => _engine.GetAllDownloads(),
+            CategorySeparator => _engine.GetAllDownloads(),
             _ => _engine.GetAllDownloads().Where(d => d.Category == SelectedCategory).ToList()
         };
 
@@ -158,12 +180,49 @@ public partial class MainViewModel : ObservableObject
         var existing = Downloads.FirstOrDefault(d => d.Item.Id == item.Id);
         if (existing != null)
         {
-            existing.Refresh();
+            existing.UpdateFrom(item);
         }
         else
         {
             Downloads.Insert(0, new DownloadItemViewModel(item));
         }
+    }
+
+    private void EnsureDetailsWindow(DownloadItem item, bool forceOpen)
+    {
+        if (!forceOpen && !IsAutoDetailsPopupEnabled())
+        {
+            return;
+        }
+
+        if (_detailWindows.TryGetValue(item.Id, out var existingWindow))
+        {
+            if (!existingWindow.IsVisible)
+            {
+                existingWindow.Show();
+            }
+            existingWindow.Activate();
+            return;
+        }
+
+        var details = new Views.DownloadDetailsWindow(item, _repository, _engine);
+        details.Owner = Application.Current.MainWindow;
+        details.Closed += (_, _) => _detailWindows.Remove(item.Id);
+        _detailWindows[item.Id] = details;
+        details.Show();
+        details.Activate();
+    }
+
+    private bool IsAutoDetailsPopupEnabled()
+    {
+        var setting = _repository.GetSetting("AutoShowDownloadWindow");
+        if (string.IsNullOrWhiteSpace(setting))
+        {
+            return true;
+        }
+
+        return !string.Equals(setting, "0", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(setting, "false", StringComparison.OrdinalIgnoreCase);
     }
 
     private void RefreshStats()

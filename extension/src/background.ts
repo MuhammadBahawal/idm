@@ -20,6 +20,7 @@ const DOWNLOAD_EXTENSIONS = new Set([
 interface ExtMessage {
     type: string;
     url?: string;
+    youtubeUrl?: string;
     filename?: string;
     manifestUrl?: string;
     mediaType?: string;
@@ -33,6 +34,9 @@ interface ExtMessage {
     audioUrl?: string;
     preferMuxed?: boolean;
     streamSource?: string;
+    clickTsIso?: string;
+    detectedVideoUrl?: string;
+    canonicalYoutubeUrl?: string;
 }
 
 interface SendResult {
@@ -392,7 +396,10 @@ function parseHeightFromQuality(label?: string): number {
 
 function isYoutubeHost(host: string): boolean {
     const lower = host.toLowerCase();
-    return lower.includes("googlevideo.com") || lower.endsWith("youtube.com") || lower === "youtu.be";
+    return lower.includes("googlevideo.com")
+        || lower.endsWith("youtube.com")
+        || lower === "youtu.be"
+        || lower.endsWith("youtube-nocookie.com");
 }
 
 function isYoutubePageUrl(urlValue: string): boolean {
@@ -400,10 +407,164 @@ function isYoutubePageUrl(urlValue: string): boolean {
         const parsed = new URL(urlValue);
         const host = parsed.hostname.toLowerCase();
         if (host.includes("googlevideo.com")) return false;
-        return host.endsWith("youtube.com") || host === "youtu.be" || host === "m.youtube.com";
+        return host.endsWith("youtube.com")
+            || host === "youtu.be"
+            || host === "m.youtube.com"
+            || host.endsWith("youtube-nocookie.com");
     } catch {
         return false;
     }
+}
+
+function isGoogleVideoUrl(urlValue: string): boolean {
+    try {
+        const parsed = new URL(urlValue);
+        return parsed.hostname.toLowerCase().includes("googlevideo.com");
+    } catch {
+        return false;
+    }
+}
+
+function getSenderYoutubePageUrl(sender: chrome.runtime.MessageSender): string | null {
+    const tabUrl = sender.tab?.url;
+    if (typeof tabUrl === "string" && isYoutubePageUrl(tabUrl)) {
+        return tabUrl;
+    }
+    return null;
+}
+
+function getMessageYoutubePageUrl(message: ExtMessage, sender: chrome.runtime.MessageSender): string | null {
+    const candidates: string[] = [];
+    const pushCandidate = (value?: string): void => {
+        if (!value) return;
+        const trimmed = value.trim();
+        if (trimmed.length === 0) return;
+        candidates.push(trimmed);
+    };
+
+    pushCandidate(message.canonicalYoutubeUrl);
+    pushCandidate(message.youtubeUrl);
+    pushCandidate(message.pageUrl);
+    pushCandidate(sender.tab?.url);
+    if (message.url && isYoutubePageUrl(message.url)) {
+        pushCandidate(message.url);
+    }
+
+    for (const candidate of candidates) {
+        const normalized = normalizeYouTubeUrl(candidate);
+        if (normalized) {
+            return normalized;
+        }
+        if (isYoutubePageUrl(candidate)) {
+            return candidate;
+        }
+    }
+
+    return null;
+}
+
+function normalizeYouTubeUrl(inputUrl: string): string | null {
+    let parsed: URL;
+    try {
+        parsed = new URL(inputUrl);
+    } catch {
+        return null;
+    }
+
+    const host = parsed.hostname.toLowerCase();
+    if (!(host.endsWith("youtube.com")
+        || host === "youtu.be"
+        || host === "m.youtube.com"
+        || host.endsWith("youtube-nocookie.com"))) {
+        return null;
+    }
+
+    const toWatch = (id: string): string => `https://www.youtube.com/watch?v=${encodeURIComponent(id)}`;
+    const firstPathPart = (): string => parsed.pathname.split("/").filter(Boolean)[0] || "";
+    const secondPathPart = (): string => parsed.pathname.split("/").filter(Boolean)[1] || "";
+
+    if (host === "youtu.be") {
+        const id = firstPathPart();
+        return id ? toWatch(id) : null;
+    }
+
+    if (parsed.pathname === "/redirect") {
+        const q = parsed.searchParams.get("q");
+        return q ? normalizeYouTubeUrl(q) : null;
+    }
+
+    if (parsed.pathname === "/watch") {
+        const id = parsed.searchParams.get("v");
+        return id ? toWatch(id) : null;
+    }
+
+    if (parsed.pathname.startsWith("/shorts/") || parsed.pathname.startsWith("/embed/") || parsed.pathname.startsWith("/live/")) {
+        const id = secondPathPart();
+        return id ? toWatch(id) : null;
+    }
+
+    // Keep unknown YouTube URL shapes so native host can still try yt-dlp extraction.
+    return parsed.toString();
+}
+
+function nativeDownloadResponse(result: SendResult, fallbackRequestId: string): Record<string, unknown> {
+    const payload = (result.response && typeof result.response === "object")
+        ? getPayload(result.response)
+        : undefined;
+
+    return {
+        success: result.success,
+        error: result.error,
+        requestId: result.requestId || fallbackRequestId,
+        nativeType: result.response?.["type"] ?? "",
+        outputPath: typeof payload?.["outputPath"] === "string" ? payload["outputPath"] : "",
+        fileName: typeof payload?.["fileName"] === "string" ? payload["fileName"] : "",
+        runner: typeof payload?.["runner"] === "string" ? payload["runner"] : "",
+        mode: typeof payload?.["mode"] === "string" ? payload["mode"] : ""
+    };
+}
+
+async function sendYouTubeDownload(
+    youtubeUrl: string,
+    message: ExtMessage,
+    sender: chrome.runtime.MessageSender
+): Promise<SendResult> {
+    const tab = sender.tab;
+    const normalizedYoutubeUrl = normalizeYouTubeUrl(youtubeUrl) || youtubeUrl;
+    const detectedVideoUrl = message.detectedVideoUrl || message.url || message.videoUrl || "";
+    const clickTsIso = message.clickTsIso || nowIso();
+    const pageUrl = message.pageUrl || tab?.url || normalizedYoutubeUrl;
+    const ytHeaders = await buildHeadersWithCookies(
+        normalizedYoutubeUrl,
+        message.headers || {}
+    );
+
+    appendDebugLog("info", "gui.youtube.download.request", {
+        clickTsIso,
+        tabId: tab?.id,
+        tabUrl: tab?.url || "",
+        pageUrl,
+        detectedVideoUrl,
+        canonicalYoutubeUrl: normalizedYoutubeUrl,
+        hasCookieHeader: !!ytHeaders["Cookie"],
+        cookieLength: ytHeaders["Cookie"]?.length || 0,
+        userAgent: ytHeaders["User-Agent"] || "",
+        referer: pageUrl
+    });
+
+    return postToNative("add_youtube_download", {
+        videoUrl: normalizedYoutubeUrl,
+        filename: message.filename,
+        title: message.title || tab?.title || "",
+        quality: message.quality || "",
+        referrer: pageUrl,
+        headers: ytHeaders,
+        pageUrl,
+        clickTsIso,
+        detectedVideoUrl,
+        canonicalYoutubeUrl: normalizedYoutubeUrl,
+        requestSource: message.streamSource || "extension"
+    });
 }
 
 function normalizeStreamSource(source?: string): string {
@@ -809,10 +970,24 @@ chrome.runtime.onMessage.addListener((message: ExtMessage, sender, sendResponse)
                         sendResponse({ success: false, error: "Missing URL", requestId });
                         return;
                     }
-                    if (isYoutubePageUrl(message.url)) {
+                    const senderYoutubeUrl = getMessageYoutubePageUrl(message, sender);
+                    const urlLooksYoutubeVideo = isYoutubePageUrl(message.url) || isGoogleVideoUrl(message.url);
+                    const explicitYoutubeRequest = !!message.youtubeUrl
+                        || !!message.canonicalYoutubeUrl
+                        || message.streamSource === "gui-overlay"
+                        || message.streamSource === "popup-resource";
+                    const requiresYoutubeFlow = urlLooksYoutubeVideo || explicitYoutubeRequest;
+
+                    if (senderYoutubeUrl) {
+                        const ytResult = await sendYouTubeDownload(senderYoutubeUrl, message, sender);
+                        sendResponse(nativeDownloadResponse(ytResult, requestId));
+                        return;
+                    }
+
+                    if (requiresYoutubeFlow) {
                         sendResponse({
                             success: false,
-                            error: "Open the YouTube video and use the in-player MyDM button to capture downloadable streams.",
+                            error: "Unable to resolve YouTube page URL for this stream. Open the video tab and try again.",
                             requestId
                         });
                         return;
@@ -839,6 +1014,16 @@ chrome.runtime.onMessage.addListener((message: ExtMessage, sender, sendResponse)
                         return;
                     }
 
+                    // Never use chrome.downloads fallback for YouTube stream-like URLs.
+                    if (isGoogleVideoUrl(message.url) || requiresYoutubeFlow) {
+                        sendResponse({
+                            success: false,
+                            error: result.error || "MyDM native host is required for YouTube stream downloads",
+                            requestId: result.requestId || requestId
+                        });
+                        return;
+                    }
+
                     // FALLBACK: Use chrome.downloads API if NativeHost fails
                     appendDebugLog("info", "download.fallback_chrome", {
                         requestId,
@@ -858,6 +1043,21 @@ chrome.runtime.onMessage.addListener((message: ExtMessage, sender, sendResponse)
                             requestId
                         });
                     }
+                    return;
+                }
+                case "download_youtube": {
+                    const youtubeUrl = message.youtubeUrl || message.url || "";
+                    if (!youtubeUrl) {
+                        sendResponse({ success: false, error: "Missing YouTube URL", requestId });
+                        return;
+                    }
+                    if (!isYoutubePageUrl(youtubeUrl)) {
+                        sendResponse({ success: false, error: "Invalid YouTube page URL", requestId });
+                        return;
+                    }
+
+                    const ytResult = await sendYouTubeDownload(youtubeUrl, message, sender);
+                    sendResponse(nativeDownloadResponse(ytResult, requestId));
                     return;
                 }
                 case "download_media": {
@@ -893,6 +1093,26 @@ chrome.runtime.onMessage.addListener((message: ExtMessage, sender, sendResponse)
                         return;
                     }
 
+                    const senderYoutubeUrl = getMessageYoutubePageUrl(message, sender);
+                    if (senderYoutubeUrl) {
+                        const ytResult = await sendYouTubeDownload(
+                            senderYoutubeUrl,
+                            message,
+                            sender
+                        );
+                        sendResponse(nativeDownloadResponse(ytResult, requestId));
+                        return;
+                    }
+
+                    if (isGoogleVideoUrl(message.videoUrl)) {
+                        sendResponse({
+                            success: false,
+                            error: "Unable to resolve YouTube page URL for this stream. Open the video tab and try again.",
+                            requestId
+                        });
+                        return;
+                    }
+
                     const tab = sender.tab;
                     const videoHeaders = await buildHeadersWithCookies(
                         message.videoUrl,
@@ -912,6 +1132,15 @@ chrome.runtime.onMessage.addListener((message: ExtMessage, sender, sendResponse)
                         sendResponse({
                             success: true,
                             error: result.error,
+                            requestId: result.requestId || requestId
+                        });
+                        return;
+                    }
+
+                    if (isGoogleVideoUrl(message.videoUrl)) {
+                        sendResponse({
+                            success: false,
+                            error: result.error || "MyDM native host is required for YouTube stream downloads",
                             requestId: result.requestId || requestId
                         });
                         return;

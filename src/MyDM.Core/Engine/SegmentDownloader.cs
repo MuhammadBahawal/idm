@@ -31,6 +31,7 @@ public class SegmentDownloader
         DownloadSegment segment,
         string url,
         long perDownloadSpeedLimit,
+        Func<long>? speedLimitProvider = null,
         IReadOnlyDictionary<string, string>? headers = null,
         Action<DownloadSegment, long>? onProgress = null,
         CancellationToken ct = default)
@@ -82,7 +83,8 @@ public class SegmentDownloader
             ct.ThrowIfCancellationRequested();
 
             // Apply speed limiting (delay only, never truncate data)
-            await _speedLimiter.RequestBytesAsync(bytesRead, perDownloadSpeedLimit, ct);
+            var speedLimit = speedLimitProvider?.Invoke() ?? perDownloadSpeedLimit;
+            await _speedLimiter.RequestBytesAsync(bytesRead, speedLimit, ct);
             await fileStream.WriteAsync(buffer.AsMemory(0, bytesRead), ct);
 
             segment.DownloadedBytes += bytesRead;
@@ -102,6 +104,7 @@ public class SegmentDownloader
         string url,
         string outputPath,
         long perDownloadSpeedLimit,
+        Func<long>? speedLimitProvider = null,
         IReadOnlyDictionary<string, string>? headers = null,
         Action<long, long>? onProgress = null,
         CancellationToken ct = default)
@@ -152,7 +155,8 @@ public class SegmentDownloader
             ct.ThrowIfCancellationRequested();
 
             // Apply speed limiting (delay only, never truncate data)
-            await _speedLimiter.RequestBytesAsync(bytesRead, perDownloadSpeedLimit, ct);
+            var speedLimit = speedLimitProvider?.Invoke() ?? perDownloadSpeedLimit;
+            await _speedLimiter.RequestBytesAsync(bytesRead, speedLimit, ct);
             await fileStream.WriteAsync(buffer.AsMemory(0, bytesRead), ct);
 
             totalRead += bytesRead;
