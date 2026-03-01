@@ -1,5 +1,5 @@
 const NATIVE_HOST_NAME = "com.mydm.native";
-const REQUEST_TIMEOUT_MS = 15000;
+const REQUEST_TIMEOUT_MS = 300_000; // 5 minutes — yt-dlp downloads can take a while
 const MAX_DEBUG_LOGS = 300;
 const MAX_DETECTED_MEDIA = 100;
 const MAX_DETECTED_RESOURCES = 200;
@@ -37,6 +37,7 @@ interface ExtMessage {
     clickTsIso?: string;
     detectedVideoUrl?: string;
     canonicalYoutubeUrl?: string;
+    formatId?: string;
 }
 
 interface SendResult {
@@ -1352,6 +1353,83 @@ chrome.runtime.onMessage.addListener((message: ExtMessage, sender, sendResponse)
                         }
                     }
                     sendResponse({ success: true, requestId });
+                    return;
+                }
+                case "list_youtube_formats": {
+                    const youtubeUrl = message.youtubeUrl || message.url || "";
+                    if (!youtubeUrl) {
+                        sendResponse({ success: false, error: "Missing YouTube URL", requestId });
+                        return;
+                    }
+
+                    appendDebugLog("info", "list_youtube_formats.start", { requestId, youtubeUrl });
+                    const fmtResult = await postToNative("list_youtube_formats", {
+                        videoUrl: youtubeUrl,
+                        referrer: sender.tab?.url || "https://www.youtube.com/"
+                    });
+
+                    if (fmtResult.success && fmtResult.response) {
+                        const payload = (fmtResult.response as Record<string, unknown>)["payload"] as Record<string, unknown> | undefined;
+                        sendResponse({
+                            success: true,
+                            requestId: fmtResult.requestId || requestId,
+                            formats: payload?.["formats"] || [],
+                            title: payload?.["title"] || "",
+                            duration: payload?.["duration"] || 0
+                        });
+                    } else {
+                        sendResponse({
+                            success: false,
+                            error: fmtResult.error || "Failed to query formats",
+                            requestId: fmtResult.requestId || requestId
+                        });
+                    }
+                    return;
+                }
+                case "download_youtube_format": {
+                    const youtubeUrl = message.youtubeUrl || message.url || "";
+                    const formatId = message.formatId || "";
+                    if (!youtubeUrl) {
+                        sendResponse({ success: false, error: "Missing YouTube URL", requestId });
+                        return;
+                    }
+                    if (!formatId) {
+                        sendResponse({ success: false, error: "Missing format ID", requestId });
+                        return;
+                    }
+
+                    const tab = sender.tab;
+                    const ytHeaders = await buildHeadersWithCookies(
+                        youtubeUrl,
+                        message.headers || {}
+                    );
+                    appendDebugLog("info", "download_youtube_format.start", { requestId, youtubeUrl, formatId });
+                    const dlResult = await postToNative("download_youtube_format", {
+                        videoUrl: youtubeUrl,
+                        formatId,
+                        filename: message.filename,
+                        title: message.title || tab?.title || "",
+                        referrer: tab?.url || "https://www.youtube.com/",
+                        headers: ytHeaders
+                    });
+
+                    if (dlResult.success) {
+                        const payload = (dlResult.response as Record<string, unknown> | undefined)?.["payload"] as Record<string, unknown> | undefined;
+                        sendResponse({
+                            success: true,
+                            requestId: dlResult.requestId || requestId,
+                            outputPath: payload?.["outputPath"] || "",
+                            fileName: payload?.["fileName"] || "",
+                            runner: payload?.["runner"] || "",
+                            mode: "download_youtube_format"
+                        });
+                    } else {
+                        sendResponse({
+                            success: false,
+                            error: dlResult.error || "Download failed",
+                            requestId: dlResult.requestId || requestId
+                        });
+                    }
                     return;
                 }
                 default: {

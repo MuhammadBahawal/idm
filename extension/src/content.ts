@@ -40,6 +40,20 @@ interface StreamQualityOption {
     hasAudio: boolean;
 }
 
+interface YouTubeFormat {
+    formatId: string;
+    qualityLabel: string;
+    height: number;
+    ext: string;
+    filesize: number;
+    vcodec: string;
+    acodec: string;
+    hasVideo: boolean;
+    hasAudio: boolean;
+    muxed: boolean;
+    fps: number;
+}
+
 interface OverlayController {
     video: HTMLVideoElement;
     host: HTMLDivElement;
@@ -113,13 +127,21 @@ function buildRequestHeaders(): Record<string, string> {
 }
 
 function sendRuntimeMessage<T extends RuntimeResponse>(message: Record<string, unknown>): Promise<T> {
+    return sendRuntimeMessageWithTimeout<T>(message, MESSAGE_TIMEOUT_MS);
+}
+
+function sendRuntimeMessageLong<T extends RuntimeResponse>(message: Record<string, unknown>): Promise<T> {
+    return sendRuntimeMessageWithTimeout<T>(message, 300_000); // 5 minutes for yt-dlp ops
+}
+
+function sendRuntimeMessageWithTimeout<T extends RuntimeResponse>(message: Record<string, unknown>, timeoutMs: number): Promise<T> {
     return new Promise<T>((resolve, reject) => {
         let done = false;
         const timer = setTimeout(() => {
             if (done) return;
             done = true;
             reject(new Error("Timed out waiting for extension response"));
-        }, MESSAGE_TIMEOUT_MS);
+        }, timeoutMs);
 
         chrome.runtime.sendMessage(message, (response: T) => {
             if (done) return;
@@ -378,6 +400,229 @@ function pickStreamQuality(qualities: StreamQualityOption[]): Promise<StreamQual
             cleanup();
             resolve(null);
         });
+
+        document.body.appendChild(backdrop);
+        document.body.appendChild(modal);
+    });
+}
+
+function formatFileSize(bytes: number): string {
+    if (bytes <= 0) return "";
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+    if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
+async function listYouTubeFormats(youtubeUrl: string): Promise<YouTubeFormat[]> {
+    try {
+        const requestId = genRequestId("ytfmt");
+        const response = await sendRuntimeMessageLong<RuntimeResponse & { formats?: YouTubeFormat[] }>({
+            type: "list_youtube_formats",
+            url: youtubeUrl,
+            youtubeUrl,
+            requestId
+        });
+
+        if (!response?.success || !Array.isArray(response.formats)) {
+            log("warn", "list_youtube_formats_failed", {
+                error: response?.error || "No formats returned"
+            });
+            return [];
+        }
+
+        return response.formats;
+    } catch (error) {
+        log("error", "list_youtube_formats_error", { error: String(error) });
+        return [];
+    }
+}
+
+function pickYouTubeFormat(formats: YouTubeFormat[], videoTitle: string): Promise<YouTubeFormat | null> {
+    return new Promise((resolve) => {
+        document.querySelector(".mydm-quality-modal")?.remove();
+        document.querySelector(".mydm-modal-backdrop")?.remove();
+
+        const modal = document.createElement("div");
+        modal.className = "mydm-quality-modal";
+        modal.style.cssText = `
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            z-index: ${OVERLAY_Z_INDEX};
+            background: linear-gradient(145deg, #1a1a2e, #16213e);
+            border: 1px solid rgba(99, 102, 241, 0.3);
+            border-radius: 16px;
+            box-shadow: 0 24px 64px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255,255,255,0.05);
+            color: #e2e8f0;
+            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+            min-width: 380px;
+            max-width: 480px;
+            max-height: 80vh;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            animation: mydm-modal-in 0.25s ease-out;
+        `;
+
+        // Inject keyframes
+        const styleEl = document.createElement("style");
+        styleEl.textContent = `
+            @keyframes mydm-modal-in {
+                from { opacity: 0; transform: translate(-50%, -50%) scale(0.92); }
+                to { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+            }
+        `;
+        document.head.appendChild(styleEl);
+
+        // Header
+        const header = document.createElement("div");
+        header.style.cssText = `
+            padding: 16px 20px;
+            border-bottom: 1px solid rgba(99, 102, 241, 0.15);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        `;
+
+        const titleEl = document.createElement("div");
+        titleEl.style.cssText = "display: flex; flex-direction: column; gap: 4px; flex: 1; min-width: 0;";
+        const titleText = document.createElement("span");
+        titleText.textContent = "Download Video";
+        titleText.style.cssText = "font-size: 15px; font-weight: 700; color: #fff;";
+        const subtitleText = document.createElement("span");
+        subtitleText.textContent = videoTitle.length > 55 ? videoTitle.substring(0, 55) + "..." : videoTitle;
+        subtitleText.style.cssText = "font-size: 11px; color: #94a3b8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;";
+        titleEl.appendChild(titleText);
+        titleEl.appendChild(subtitleText);
+
+        const closeBtn = document.createElement("button");
+        closeBtn.textContent = "✕";
+        closeBtn.style.cssText = `
+            background: none; border: none; color: #94a3b8; font-size: 18px;
+            cursor: pointer; padding: 4px 8px; border-radius: 6px;
+            transition: all 0.15s ease;
+        `;
+        closeBtn.addEventListener("mouseenter", () => { closeBtn.style.background = "rgba(255,255,255,0.1)"; closeBtn.style.color = "#fff"; });
+        closeBtn.addEventListener("mouseleave", () => { closeBtn.style.background = "none"; closeBtn.style.color = "#94a3b8"; });
+
+        header.appendChild(titleEl);
+        header.appendChild(closeBtn);
+        modal.appendChild(header);
+
+        // Format list
+        const list = document.createElement("div");
+        list.style.cssText = `
+            overflow-y: auto;
+            max-height: 400px;
+            padding: 8px 12px 12px;
+        `;
+
+        for (const fmt of formats) {
+            const label = fmt.qualityLabel || (fmt.height > 0 ? `${fmt.height}p` : "Audio");
+            const size = formatFileSize(fmt.filesize);
+            const isAudioOnly = !fmt.hasVideo && fmt.hasAudio;
+            const codecInfo = isAudioOnly
+                ? (fmt.acodec !== "none" ? fmt.acodec : fmt.ext)
+                : (fmt.vcodec !== "none" ? fmt.vcodec.split(".")[0] : fmt.ext);
+            const typeLabel = isAudioOnly ? "🎵 Audio" : (fmt.muxed ? "🎬 Video+Audio" : "🎥 Video");
+            const fpsText = fmt.fps && fmt.fps > 30 ? ` ${fmt.fps}fps` : "";
+
+            const item = document.createElement("button");
+            item.style.cssText = `
+                width: 100%;
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                padding: 10px 14px;
+                margin-bottom: 4px;
+                background: rgba(255, 255, 255, 0.03);
+                border: 1px solid rgba(255, 255, 255, 0.06);
+                border-radius: 10px;
+                color: #e2e8f0;
+                cursor: pointer;
+                font-family: inherit;
+                font-size: 13px;
+                transition: all 0.15s ease;
+            `;
+            item.addEventListener("mouseenter", () => {
+                item.style.background = "rgba(99, 102, 241, 0.15)";
+                item.style.borderColor = "rgba(99, 102, 241, 0.4)";
+                item.style.transform = "translateX(2px)";
+            });
+            item.addEventListener("mouseleave", () => {
+                item.style.background = "rgba(255, 255, 255, 0.03)";
+                item.style.borderColor = "rgba(255, 255, 255, 0.06)";
+                item.style.transform = "translateX(0)";
+            });
+
+            const leftCol = document.createElement("div");
+            leftCol.style.cssText = "display: flex; align-items: center; gap: 12px;";
+
+            const resolution = document.createElement("span");
+            resolution.textContent = label + fpsText;
+            resolution.style.cssText = "font-weight: 600; font-size: 14px; min-width: 70px;";
+
+            const type = document.createElement("span");
+            type.textContent = typeLabel;
+            type.style.cssText = "font-size: 11px; color: #94a3b8;";
+
+            leftCol.appendChild(resolution);
+            leftCol.appendChild(type);
+
+            const rightCol = document.createElement("div");
+            rightCol.style.cssText = "display: flex; align-items: center; gap: 10px; color: #64748b; font-size: 11px;";
+
+            if (codecInfo) {
+                const codec = document.createElement("span");
+                codec.textContent = codecInfo;
+                codec.style.cssText = "padding: 2px 6px; background: rgba(255,255,255,0.06); border-radius: 4px; font-size: 10px;";
+                rightCol.appendChild(codec);
+            }
+
+            const ext = document.createElement("span");
+            ext.textContent = fmt.ext.toUpperCase();
+            ext.style.cssText = "padding: 2px 6px; background: rgba(99, 102, 241, 0.15); color: #818cf8; border-radius: 4px; font-size: 10px; font-weight: 600;";
+            rightCol.appendChild(ext);
+
+            if (size) {
+                const sizeEl = document.createElement("span");
+                sizeEl.textContent = size;
+                sizeEl.style.cssText = "min-width: 55px; text-align: right; color: #94a3b8;";
+                rightCol.appendChild(sizeEl);
+            }
+
+            item.appendChild(leftCol);
+            item.appendChild(rightCol);
+
+            item.addEventListener("click", () => {
+                cleanup();
+                resolve(fmt);
+            });
+            list.appendChild(item);
+        }
+
+        modal.appendChild(list);
+
+        // Backdrop
+        const backdrop = document.createElement("div");
+        backdrop.className = "mydm-modal-backdrop";
+        backdrop.style.cssText = `
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0, 0, 0, 0.6);
+            backdrop-filter: blur(4px);
+            z-index: ${OVERLAY_Z_INDEX - 1};
+        `;
+
+        const cleanup = () => {
+            modal.remove();
+            backdrop.remove();
+            styleEl.remove();
+        };
+
+        closeBtn.addEventListener("click", () => { cleanup(); resolve(null); });
+        backdrop.addEventListener("click", () => { cleanup(); resolve(null); });
 
         document.body.appendChild(backdrop);
         document.body.appendChild(modal);
@@ -882,25 +1127,76 @@ function injectVideoOverlay(video: HTMLVideoElement): void {
                 canonicalYoutubeUrl: youtubeUrl
             });
 
-            const ytFilename = `${sanitizeFileName(document.title || "youtube_video")}.mp4`;
-            const result = await sendYoutubeDownloadWithCompatibility(
-                youtubeUrl,
-                ytFilename,
-                clickTsIso,
-                detectedVideoUrlAtClick || ""
-            );
-            if (isConfirmedYoutubeDownloadResult(result)) {
-                const savedName = result.fileName || ytFilename;
-                showNotification(`Saved with yt-dlp: ${savedName}`);
+            // Query available formats from yt-dlp
+            showNotification("Fetching available qualities...");
+            const formats = await listYouTubeFormats(youtubeUrl);
+
+            if (formats.length > 0) {
+                // Show format picker for user to choose resolution
+                const selectedFormat = await pickYouTubeFormat(formats, document.title || "YouTube Video");
+                if (!selectedFormat) {
+                    showNotification("Download cancelled", true);
+                    return;
+                }
+
+                // Download with the exact format ID chosen by user — fire-and-forget
+                const ytFilename = `${sanitizeFileName(document.title || "youtube_video")}.${selectedFormat.ext || "mp4"}`;
+                showNotification(`Downloading ${selectedFormat.qualityLabel}: ${ytFilename}`);
+
+                // Send download request in the background (don't block UI)
+                sendRuntimeMessageLong<RuntimeResponse>({
+                    type: "download_youtube_format",
+                    url: youtubeUrl,
+                    youtubeUrl,
+                    formatId: selectedFormat.formatId,
+                    filename: ytFilename,
+                    title: document.title,
+                    quality: selectedFormat.qualityLabel,
+                    pageUrl: location.href,
+                    streamSource: "gui-overlay",
+                    clickTsIso,
+                    detectedVideoUrl: detectedVideoUrlAtClick || "",
+                    canonicalYoutubeUrl: youtubeUrl,
+                    requestId: genRequestId("ytdl"),
+                    headers: buildRequestHeaders()
+                }).then(result => {
+                    if (result?.success) {
+                        const savedName = result.fileName || ytFilename;
+                        log("info", "gui.youtube.format_download.done", { savedName, quality: selectedFormat.qualityLabel });
+                        showNotification(`✅ Downloaded: ${savedName}`);
+                    } else {
+                        const err = result?.error || "Download failed";
+                        log("error", "gui.youtube.format_download.fail", { error: err });
+                        showNotification(`Download failed: ${err}`, true);
+                    }
+                }).catch(err => {
+                    log("error", "gui.youtube.format_download.error", { error: String(err) });
+                    showNotification(`Download error: ${String(err)}`, true);
+                });
                 return;
+            } else {
+                // Fallback: try legacy quality: "best" flow if format listing failed
+                log("warn", "gui.youtube.format_list_empty_using_legacy", { youtubeUrl });
+                const ytFilename = `${sanitizeFileName(document.title || "youtube_video")}.mp4`;
+                const result = await sendYoutubeDownloadWithCompatibility(
+                    youtubeUrl,
+                    ytFilename,
+                    clickTsIso,
+                    detectedVideoUrlAtClick || ""
+                );
+                if (isConfirmedYoutubeDownloadResult(result)) {
+                    const savedName = result.fileName || ytFilename;
+                    showNotification(`Saved with yt-dlp: ${savedName}`);
+                    return;
+                }
+                youtubeRouteError = result.error || "";
             }
-            log("warn", "gui.youtube.direct_failed_trying_stream_fallback", {
+
+            log("warn", "gui.youtube.all_routes_failed_trying_stream_fallback", {
                 pageUrl: location.href,
                 youtubeUrl,
-                error: result.error || "",
-                unverifiedSuccess: !!result.success
+                error: youtubeRouteError
             });
-            youtubeRouteError = result.error || "";
             showNotification("Direct YouTube mode failed, trying stream fallback...");
         }
 

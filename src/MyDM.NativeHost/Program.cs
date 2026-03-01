@@ -189,6 +189,8 @@ internal static class Program
             "add_media_download" => HandleAddMediaDownloadAsync(message, requestId),
             "add_video_download" => HandleAddVideoDownloadAsync(message, requestId),
             "add_youtube_download" => HandleAddYouTubeDownloadAsync(message, requestId),
+            "list_youtube_formats" => HandleListYouTubeFormatsAsync(message, requestId),
+            "download_youtube_format" => HandleDownloadYouTubeFormatAsync(message, requestId),
             "get_status" => Task.FromResult(HandleGetStatus(message, requestId)),
             _ => Task.FromResult(AddRequestId(new NativeMessage
             {
@@ -1000,6 +1002,420 @@ internal static class Program
                 }
             }, requestId);
         }
+    }
+
+    /// <summary>
+    /// Queries yt-dlp for available formats of a YouTube video and returns them.
+    /// </summary>
+    private static async Task<NativeMessage> HandleListYouTubeFormatsAsync(NativeMessage message, string requestId)
+    {
+        var rawVideoUrl = GetPayloadString(message, "videoUrl") ?? GetPayloadString(message, "url");
+        if (string.IsNullOrWhiteSpace(rawVideoUrl) || !UrlHelper.IsValidUrl(rawVideoUrl))
+        {
+            return AddRequestId(new NativeMessage
+            {
+                Type = "error",
+                Payload = new Dictionary<string, object>
+                {
+                    { "message", "Invalid or missing YouTube URL" },
+                    { "code", "INVALID_YOUTUBE_URL" }
+                }
+            }, requestId);
+        }
+
+        var videoUrl = NormalizeYouTubeUrl(rawVideoUrl);
+        if (string.IsNullOrWhiteSpace(videoUrl) || !IsYouTubePageUrl(videoUrl))
+        {
+            return AddRequestId(new NativeMessage
+            {
+                Type = "error",
+                Payload = new Dictionary<string, object>
+                {
+                    { "message", "URL must be a YouTube page URL" },
+                    { "code", "UNSUPPORTED_YOUTUBE_URL" }
+                }
+            }, requestId);
+        }
+
+        try
+        {
+            await LogAsync("info", "youtube.list_formats.start", requestId, new { videoUrl });
+
+            var runnerSpecs = ResolveYtDlpRunnerSpecs();
+            var result = default(ProcessExecutionResult);
+            var hasResult = false;
+
+            foreach (var runner in runnerSpecs)
+            {
+                var args = new List<string>(runner.PrefixArgs);
+                args.AddRange(new[] { "-J", "--no-playlist", "--ignore-config", videoUrl });
+
+                result = await ExecuteProcessAsync(runner.Executable, args, 30_000);
+                hasResult = true;
+                if (result.Started && result.ExitCode == 0 && !string.IsNullOrWhiteSpace(result.Stdout))
+                {
+                    break;
+                }
+            }
+
+            if (!hasResult || result.ExitCode != 0 || string.IsNullOrWhiteSpace(result.Stdout))
+            {
+                var errorMsg = hasResult ? (result.Stderr ?? result.StartError ?? "yt-dlp failed") : "yt-dlp not found";
+                await LogAsync("error", "youtube.list_formats.failed", requestId, new { error = errorMsg });
+                return AddRequestId(new NativeMessage
+                {
+                    Type = "error",
+                    Payload = new Dictionary<string, object>
+                    {
+                        { "message", $"Failed to query formats: {Tail(errorMsg, 200)}" },
+                        { "code", "FORMAT_QUERY_FAILED" }
+                    }
+                }, requestId);
+            }
+
+            // Parse the JSON output from yt-dlp -J
+            using var doc = JsonDocument.Parse(result.Stdout);
+            var root = doc.RootElement;
+
+            var formats = new List<Dictionary<string, object>>();
+            var title = root.TryGetProperty("title", out var titleProp) ? titleProp.GetString() ?? "" : "";
+            var duration = root.TryGetProperty("duration", out var durProp) ? durProp.GetDouble() : 0.0;
+
+            if (root.TryGetProperty("formats", out var formatsArray))
+            {
+                var seenLabels = new HashSet<string>();
+                foreach (var fmt in formatsArray.EnumerateArray())
+                {
+                    var formatId = fmt.TryGetProperty("format_id", out var fid) ? fid.GetString() ?? "" : "";
+                    var ext = fmt.TryGetProperty("ext", out var extProp) ? extProp.GetString() ?? "" : "";
+                    var vcodec = fmt.TryGetProperty("vcodec", out var vc) ? vc.GetString() ?? "none" : "none";
+                    var acodec = fmt.TryGetProperty("acodec", out var ac) ? ac.GetString() ?? "none" : "none";
+                    var hasVideo = vcodec != "none";
+                    var hasAudio = acodec != "none";
+                    var height = fmt.TryGetProperty("height", out var hp) && hp.ValueKind == JsonValueKind.Number ? hp.GetInt32() : 0;
+                    var fps = fmt.TryGetProperty("fps", out var fpsProp) && fpsProp.ValueKind == JsonValueKind.Number ? fpsProp.GetDouble() : 0;
+                    var filesize = fmt.TryGetProperty("filesize", out var fs) && fs.ValueKind == JsonValueKind.Number ? fs.GetInt64() : 0;
+                    if (filesize == 0)
+                        filesize = fmt.TryGetProperty("filesize_approx", out var fsa) && fsa.ValueKind == JsonValueKind.Number ? fsa.GetInt64() : 0;
+                    var qualityLabel = fmt.TryGetProperty("format_note", out var fn) ? fn.GetString() ?? "" : "";
+                    if (string.IsNullOrWhiteSpace(qualityLabel) && height > 0)
+                        qualityLabel = $"{height}p";
+
+                    // Skip formats with no usable content
+                    if (!hasVideo && !hasAudio) continue;
+                    // Skip storyboard/manifest-only
+                    if (vcodec == "none" && acodec == "none") continue;
+
+                    var entry = new Dictionary<string, object>
+                    {
+                        { "formatId", formatId },
+                        { "ext", ext },
+                        { "qualityLabel", qualityLabel },
+                        { "height", height },
+                        { "fps", fps },
+                        { "filesize", filesize },
+                        { "vcodec", vcodec },
+                        { "acodec", acodec },
+                        { "hasVideo", hasVideo },
+                        { "hasAudio", hasAudio },
+                        { "muxed", hasVideo && hasAudio }
+                    };
+                    formats.Add(entry);
+                }
+            }
+
+            // Build a simplified quality list: group by height, prefer muxed, include audio-only
+            var qualityOptions = new List<Dictionary<string, object>>();
+            var heightGroups = formats
+                .Where(f => (bool)f["hasVideo"])
+                .GroupBy(f => (int)f["height"])
+                .OrderByDescending(g => g.Key);
+
+            foreach (var group in heightGroups)
+            {
+                // Prefer muxed formats, then pick best video-only
+                var best = group.OrderByDescending(f => (bool)f["muxed"])
+                    .ThenByDescending(f => (long)f["filesize"])
+                    .First();
+
+                qualityOptions.Add(new Dictionary<string, object>
+                {
+                    { "formatId", best["formatId"] },
+                    { "qualityLabel", best["qualityLabel"] },
+                    { "height", best["height"] },
+                    { "ext", best["ext"] },
+                    { "filesize", best["filesize"] },
+                    { "vcodec", best["vcodec"] },
+                    { "acodec", best["acodec"] },
+                    { "hasVideo", best["hasVideo"] },
+                    { "hasAudio", best["hasAudio"] },
+                    { "muxed", best["muxed"] },
+                    { "fps", best["fps"] }
+                });
+            }
+
+            // Add best audio-only option
+            var bestAudio = formats
+                .Where(f => !(bool)f["hasVideo"] && (bool)f["hasAudio"])
+                .OrderByDescending(f => (long)f["filesize"])
+                .FirstOrDefault();
+            if (bestAudio != null)
+            {
+                bestAudio["qualityLabel"] = "Audio Only";
+                qualityOptions.Add(bestAudio);
+            }
+
+            await LogAsync("info", "youtube.list_formats.done", requestId, new
+            {
+                videoUrl,
+                formatCount = formats.Count,
+                qualityCount = qualityOptions.Count
+            });
+
+            return AddRequestId(new NativeMessage
+            {
+                Type = "youtube_formats",
+                Payload = new Dictionary<string, object>
+                {
+                    { "videoUrl", videoUrl },
+                    { "title", title },
+                    { "duration", duration },
+                    { "formats", qualityOptions }
+                }
+            }, requestId);
+        }
+        catch (Exception ex)
+        {
+            await LogAsync("error", "youtube.list_formats.error", requestId, new
+            {
+                videoUrl,
+                exception = ex.GetType().Name,
+                ex.Message
+            });
+            return AddRequestId(new NativeMessage
+            {
+                Type = "error",
+                Payload = new Dictionary<string, object>
+                {
+                    { "message", ex.Message },
+                    { "code", "LIST_FORMATS_ERROR" }
+                }
+            }, requestId);
+        }
+    }
+
+    /// <summary>
+    /// Downloads a YouTube video with a specific format ID selected by the user.
+    /// </summary>
+    private static async Task<NativeMessage> HandleDownloadYouTubeFormatAsync(NativeMessage message, string requestId)
+    {
+        var rawVideoUrl = GetPayloadString(message, "videoUrl") ?? GetPayloadString(message, "url");
+        var formatId = GetPayloadString(message, "formatId");
+        var fileName = GetPayloadString(message, "filename");
+        var title = GetPayloadString(message, "title");
+        var referrer = GetPayloadString(message, "referrer");
+        var headers = BuildRequestHeaders(message);
+
+        if (string.IsNullOrWhiteSpace(rawVideoUrl) || !UrlHelper.IsValidUrl(rawVideoUrl))
+        {
+            return AddRequestId(new NativeMessage
+            {
+                Type = "error",
+                Payload = new Dictionary<string, object>
+                {
+                    { "message", "Invalid or missing YouTube URL" },
+                    { "code", "INVALID_YOUTUBE_URL" }
+                }
+            }, requestId);
+        }
+
+        if (string.IsNullOrWhiteSpace(formatId))
+        {
+            return AddRequestId(new NativeMessage
+            {
+                Type = "error",
+                Payload = new Dictionary<string, object>
+                {
+                    { "message", "Missing format ID" },
+                    { "code", "MISSING_FORMAT_ID" }
+                }
+            }, requestId);
+        }
+
+        var videoUrl = NormalizeYouTubeUrl(rawVideoUrl);
+        if (string.IsNullOrWhiteSpace(videoUrl) || !IsYouTubePageUrl(videoUrl))
+        {
+            return AddRequestId(new NativeMessage
+            {
+                Type = "error",
+                Payload = new Dictionary<string, object>
+                {
+                    { "message", "URL must be a YouTube page URL" },
+                    { "code", "UNSUPPORTED_YOUTUBE_URL" }
+                }
+            }, requestId);
+        }
+
+        try
+        {
+            var saveDir = ResolveVideoSaveDirectory();
+            Directory.CreateDirectory(saveDir);
+
+            if (!IsDirectoryWritable(saveDir, out var writeProbeError))
+            {
+                return AddRequestId(new NativeMessage
+                {
+                    Type = "error",
+                    Payload = new Dictionary<string, object>
+                    {
+                        { "message", $"Download folder is not writable: {saveDir}. {writeProbeError}" },
+                        { "code", "OUTPUT_DIR_NOT_WRITABLE" }
+                    }
+                }, requestId);
+            }
+
+            var outputTemplate = BuildYouTubeOutputTemplate(saveDir, fileName, title);
+
+            // Build format selector: use exact format ID + best audio for video-only formats
+            var formatSelector = $"{formatId}+bestaudio/best[height<={GetFormatHeight(formatId)}]/best";
+
+            var headersWithoutCookie = headers != null
+                ? new Dictionary<string, string>(headers, StringComparer.OrdinalIgnoreCase)
+                : null;
+            headersWithoutCookie?.Remove("Cookie");
+
+            var runnerSpecs = ResolveYtDlpRunnerSpecs();
+            await LogAsync("info", "youtube.download_format.start", requestId, new
+            {
+                videoUrl,
+                formatId,
+                formatSelector
+            });
+
+            var lastResult = default(ProcessExecutionResult);
+            var hasResult = false;
+            string? runnerUsed = null;
+
+            foreach (var runner in runnerSpecs)
+            {
+                var args = BuildYtDlpArgs(
+                    videoUrl,
+                    outputTemplate,
+                    formatSelector,
+                    referrer,
+                    headersWithoutCookie,
+                    includeCookieHeader: false,
+                    cookiesFromBrowser: null);
+
+                var fullArgs = new List<string>(runner.PrefixArgs);
+                fullArgs.AddRange(args);
+
+                await LogAsync("info", "youtube.download_format.attempt", requestId, new
+                {
+                    runner = runner.DisplayName,
+                    commandLine = BuildCommandLineForLog(runner.Executable, fullArgs)
+                });
+
+                lastResult = await ExecuteProcessAsync(runner.Executable, fullArgs, YtDlpTimeoutMs);
+                hasResult = true;
+
+                if (lastResult.Started && lastResult.ExitCode == 0)
+                {
+                    runnerUsed = runner.DisplayName;
+                    break;
+                }
+            }
+
+            if (!hasResult || !lastResult.Started || lastResult.ExitCode != 0)
+            {
+                var errorMsg = hasResult ? (lastResult.Stderr ?? lastResult.StartError ?? "yt-dlp failed") : "yt-dlp not found";
+                await LogAsync("error", "youtube.download_format.failed", requestId, new
+                {
+                    formatId,
+                    error = Tail(errorMsg, 500)
+                });
+
+                return AddRequestId(new NativeMessage
+                {
+                    Type = "error",
+                    Payload = new Dictionary<string, object>
+                    {
+                        { "message", $"Download failed: {Tail(errorMsg, 200)}" },
+                        { "code", "DOWNLOAD_FORMAT_FAILED" }
+                    }
+                }, requestId);
+            }
+
+            var outputPath = TryExtractOutputPath(lastResult.Stdout, saveDir)
+                ?? ResolveLikelyOutputPath(saveDir, fileName, title);
+
+            await LogAsync("info", "youtube.download_format.done", requestId, new
+            {
+                videoUrl,
+                formatId,
+                runnerUsed,
+                outputPath
+            });
+
+            return AddRequestId(new NativeMessage
+            {
+                Type = "download_added",
+                Payload = new Dictionary<string, object>
+                {
+                    { "success", true },
+                    { "outputPath", outputPath ?? "" },
+                    { "runner", runnerUsed ?? "" },
+                    { "formatId", formatId },
+                    { "fileName", Path.GetFileName(outputPath ?? fileName ?? "video.mp4") }
+                }
+            }, requestId);
+        }
+        catch (Exception ex)
+        {
+            await LogAsync("error", "youtube.download_format.error", requestId, new
+            {
+                videoUrl,
+                formatId,
+                exception = ex.GetType().Name,
+                ex.Message
+            });
+            return AddRequestId(new NativeMessage
+            {
+                Type = "error",
+                Payload = new Dictionary<string, object>
+                {
+                    { "message", ex.Message },
+                    { "code", "DOWNLOAD_FORMAT_ERROR" }
+                }
+            }, requestId);
+        }
+    }
+
+    /// <summary>
+    /// Helper to extract height from a format ID for fallback resolution filtering.
+    /// </summary>
+    private static int GetFormatHeight(string formatId)
+    {
+        // Common YouTube format IDs mapped to heights
+        return formatId switch
+        {
+            "160" => 144,
+            "133" => 240,
+            "134" => 360,
+            "135" => 480,
+            "136" => 720,
+            "137" => 1080,
+            "298" => 720,
+            "299" => 1080,
+            "264" => 1440,
+            "271" => 1440,
+            "313" => 2160,
+            "315" => 2160,
+            "17" => 144,
+            "18" => 360,
+            "22" => 720,
+            _ => 1080 // Default fallback
+        };
     }
 
     private static bool IsYouTubePageUrl(string url)

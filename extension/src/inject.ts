@@ -333,6 +333,18 @@
         if (lower.includes("googlevideo.com/videoplayback")) return true;
         if (lower.includes("googlevideo.com") && lower.includes("itag=")) return true;
 
+        // Instagram video/media
+        if ((lower.includes("cdninstagram.com") || lower.includes("scontent")) &&
+            (lower.includes("/v/") || lower.includes("/t50.") || lower.includes("/t51."))) return true;
+
+        // Facebook video
+        if (lower.includes("fbcdn.net") && (lower.includes("/v/") || lower.includes("video"))) return true;
+        if (lower.includes("video.xx.fbcdn.net")) return true;
+
+        // Twitter/X video
+        if (lower.includes("video.twimg.com")) return true;
+        if (lower.includes("abs.twimg.com") && lower.includes("video")) return true;
+
         // Manifest formats
         if (lower.includes(".m3u8") || lower.includes(".mpd")) return true;
 
