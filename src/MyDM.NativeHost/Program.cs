@@ -1276,8 +1276,10 @@ internal static class Program
 
             var outputTemplate = BuildYouTubeOutputTemplate(saveDir, fileName, title);
 
-            // Build format selector: use exact format ID + best audio for video-only formats
-            var formatSelector = $"{formatId}+bestaudio/best[height<={GetFormatHeight(formatId)}]/best";
+            // Build format selector: prefer exact format + best audio (yt-dlp merges them)
+            // Fallback chain: exact+bestaudio → best muxed at same height → best overall
+            var height = GetFormatHeight(formatId);
+            var formatSelector = $"{formatId}+bestaudio/bestvideo[height<={height}]+bestaudio/best[height<={height}]/best";
 
             var headersWithoutCookie = headers != null
                 ? new Dictionary<string, string>(headers, StringComparer.OrdinalIgnoreCase)
@@ -1285,11 +1287,13 @@ internal static class Program
             headersWithoutCookie?.Remove("Cookie");
 
             var runnerSpecs = ResolveYtDlpRunnerSpecs();
+            var ffmpegPath = ResolveFfmpegPath();
             await LogAsync("info", "youtube.download_format.start", requestId, new
             {
                 videoUrl,
                 formatId,
-                formatSelector
+                formatSelector,
+                ffmpegPath = ffmpegPath ?? "(not found)"
             });
 
             var lastResult = default(ProcessExecutionResult);
@@ -1306,6 +1310,17 @@ internal static class Program
                     headersWithoutCookie,
                     includeCookieHeader: false,
                     cookiesFromBrowser: null);
+
+                // CRITICAL: Tell yt-dlp to merge video+audio into a single mp4 file
+                args.Insert(args.Count - 1, "--merge-output-format");
+                args.Insert(args.Count - 1, "mp4");
+
+                // Point yt-dlp to ffmpeg so it can actually perform the merge
+                if (ffmpegPath != null)
+                {
+                    args.Insert(args.Count - 1, "--ffmpeg-location");
+                    args.Insert(args.Count - 1, ffmpegPath);
+                }
 
                 var fullArgs = new List<string>(runner.PrefixArgs);
                 fullArgs.AddRange(args);
@@ -1418,6 +1433,56 @@ internal static class Program
         };
     }
 
+    /// <summary>
+    /// Find ffmpeg on the system for yt-dlp's --ffmpeg-location flag.
+    /// Returns the DIRECTORY containing ffmpeg.exe, or null if not found.
+    /// </summary>
+    private static string? ResolveFfmpegPath()
+    {
+        // 1. Check PATH
+        var pathDirs = (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator);
+        foreach (var dir in pathDirs)
+        {
+            if (string.IsNullOrWhiteSpace(dir)) continue;
+            var candidate = Path.Combine(dir.Trim(), "ffmpeg.exe");
+            if (File.Exists(candidate)) return dir.Trim();
+        }
+
+        // 2. Common install locations
+        var programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        var candidates = new[]
+        {
+            Path.Combine(programFiles, "ffmpeg", "bin"),
+            Path.Combine(programFiles, "ffmpeg"),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "ffmpeg", "bin"),
+            Path.Combine(localAppData, "Microsoft", "WinGet", "Packages"),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "chocolatey", "bin"),
+            @"C:\ffmpeg\bin",
+            @"C:\tools\ffmpeg\bin"
+        };
+
+        foreach (var dir in candidates)
+        {
+            if (File.Exists(Path.Combine(dir, "ffmpeg.exe"))) return dir;
+        }
+
+        // 3. Search WinGet packages directory recursively (ffmpeg installs here with a version subfolder)
+        var wingetDir = Path.Combine(localAppData, "Microsoft", "WinGet", "Packages");
+        if (Directory.Exists(wingetDir))
+        {
+            try
+            {
+                foreach (var ffmpegExe in Directory.EnumerateFiles(wingetDir, "ffmpeg.exe", SearchOption.AllDirectories))
+                {
+                    return Path.GetDirectoryName(ffmpegExe);
+                }
+            }
+            catch { /* permission or IO error */ }
+        }
+
+        return null;
+    }
     private static bool IsYouTubePageUrl(string url)
     {
         try
