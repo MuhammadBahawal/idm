@@ -1,5 +1,6 @@
 using System.Windows;
 using System.Windows.Controls;
+using MyDM.App.Utilities;
 using MyDM.Core.Data;
 using MyDM.Core.Engine;
 using MyDM.Core.Utilities;
@@ -10,10 +11,13 @@ public partial class AddUrlDialog : Window
 {
     private readonly DownloadEngine _engine;
     private readonly DownloadRepository _repository;
+    public string? CreatedDownloadId { get; private set; }
+    public bool StartedImmediately { get; private set; }
 
     public AddUrlDialog(DownloadEngine engine, DownloadRepository repository)
     {
         InitializeComponent();
+        WindowLayoutHelper.ApplyAdaptiveLayout(this, widthRatio: 0.75, heightRatio: 0.82);
         _engine = engine;
         _repository = repository;
 
@@ -91,6 +95,8 @@ public partial class AddUrlDialog : Window
                 await _engine.StartDownloadAsync(item.Id);
             }
 
+            CreatedDownloadId = item.Id;
+            StartedImmediately = startImmediately;
             DialogResult = true;
             Close();
         }

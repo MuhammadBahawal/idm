@@ -2,12 +2,14 @@ using MyDM.Core.Data;
 using MyDM.Core.Engine;
 using MyDM.Core.Models;
 using MyDM.Core.Utilities;
+using MyDM.App.Utilities;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using System.Windows;
-using System.Windows.Media;
 using System.Windows.Threading;
+using MediaBrush = System.Windows.Media.Brush;
+using MediaBrushes = System.Windows.Media.Brushes;
 
 namespace MyDM.App.Views;
 
@@ -34,7 +36,7 @@ public partial class DownloadDetailsWindow : Window, INotifyPropertyChanged
     private string _statusText = "Queued";
     private string _speedLimitInput = "0";
     private string _speedLimitStatusText = "Current: Unlimited";
-    private System.Windows.Media.Brush _statusBadgeBrush = System.Windows.Media.Brushes.Gray;
+    private MediaBrush _statusBadgeBrush = MediaBrushes.Gray;
 
     public event PropertyChangedEventHandler? PropertyChanged;
 
@@ -127,7 +129,7 @@ public partial class DownloadDetailsWindow : Window, INotifyPropertyChanged
         }
     }
 
-    public System.Windows.Media.Brush StatusBadgeBrush
+    public MediaBrush StatusBadgeBrush
     {
         get => _statusBadgeBrush;
         private set => SetField(ref _statusBadgeBrush, value);
@@ -163,6 +165,7 @@ public partial class DownloadDetailsWindow : Window, INotifyPropertyChanged
     public DownloadDetailsWindow(DownloadItem item, DownloadRepository repository, DownloadEngine engine)
     {
         InitializeComponent();
+        WindowLayoutHelper.ApplyAdaptiveLayout(this, widthRatio: 0.9, heightRatio: 0.9);
         _item = item;
         _repository = repository;
         _engine = engine;
@@ -171,7 +174,7 @@ public partial class DownloadDetailsWindow : Window, INotifyPropertyChanged
         _engine.OnProgressUpdated += HandleEngineProgressUpdated;
         _engine.OnStatusChanged += HandleEngineStatusChanged;
 
-        _refreshTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(150) };
+        _refreshTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(120) };
         _refreshTimer.Tick += RefreshTimerTick;
         _refreshTimer.Start();
 
@@ -208,10 +211,18 @@ public partial class DownloadDetailsWindow : Window, INotifyPropertyChanged
 
     private void RefreshSnapshot(bool forceLogs)
     {
-        var latest = _engine.GetDownload(_item.Id) ?? _repository.GetById(_item.Id);
-        if (latest != null)
+        // Always take DB as the baseline because extension downloads are driven by NativeHost.
+        var dbSnapshot = _repository.GetById(_item.Id);
+        if (dbSnapshot != null)
         {
-            _item = latest;
+            _item = dbSnapshot;
+        }
+
+        // For downloads started from this desktop process, keep live telemetry from memory.
+        var live = _engine.GetLiveDownload(_item.Id);
+        if (live != null)
+        {
+            OverlayLiveTelemetry(_item, live);
         }
 
         WindowTitle = $"Download - {_item.FileName}";
@@ -239,6 +250,34 @@ public partial class DownloadDetailsWindow : Window, INotifyPropertyChanged
         }
     }
 
+    private static void OverlayLiveTelemetry(DownloadItem target, DownloadItem live)
+    {
+        target.Status = live.Status;
+        target.TotalSize = live.TotalSize > 0 ? live.TotalSize : target.TotalSize;
+        target.DownloadedSize = Math.Max(target.DownloadedSize, live.DownloadedSize);
+        target.TransferRate = live.TransferRate;
+        target.TimeLeft = live.TimeLeft;
+        target.SupportsRange = live.SupportsRange;
+        target.Connections = live.Connections;
+        target.Segments = live.Segments.Select(CloneSegment).ToList();
+    }
+
+    private static DownloadSegment CloneSegment(DownloadSegment segment)
+    {
+        return new DownloadSegment
+        {
+            Id = segment.Id,
+            DownloadId = segment.DownloadId,
+            Index = segment.Index,
+            StartByte = segment.StartByte,
+            EndByte = segment.EndByte,
+            DownloadedBytes = segment.DownloadedBytes,
+            Status = segment.Status,
+            TempFile = segment.TempFile,
+            TransferRate = segment.TransferRate
+        };
+    }
+
     private void UpdateSegments()
     {
         var segments = _item.Segments.Count > 0
@@ -261,10 +300,33 @@ public partial class DownloadDetailsWindow : Window, INotifyPropertyChanged
             });
         }
 
-        SegmentRows.Clear();
-        foreach (var segment in segments)
+        var incomingIds = new HashSet<string>(segments.Select(s => s.Id), StringComparer.Ordinal);
+
+        for (var targetIndex = 0; targetIndex < segments.Count; targetIndex++)
         {
-            SegmentRows.Add(new SegmentProgressViewModel(segment));
+            var segment = segments[targetIndex];
+            var existing = SegmentRows.FirstOrDefault(row => string.Equals(row.SegmentId, segment.Id, StringComparison.Ordinal));
+
+            if (existing == null)
+            {
+                SegmentRows.Insert(targetIndex, new SegmentProgressViewModel(segment));
+                continue;
+            }
+
+            existing.UpdateFrom(segment);
+            var currentIndex = SegmentRows.IndexOf(existing);
+            if (currentIndex != targetIndex)
+            {
+                SegmentRows.Move(currentIndex, targetIndex);
+            }
+        }
+
+        for (var i = SegmentRows.Count - 1; i >= 0; i--)
+        {
+            if (!incomingIds.Contains(SegmentRows[i].SegmentId))
+            {
+                SegmentRows.RemoveAt(i);
+            }
         }
     }
 
@@ -290,7 +352,7 @@ public partial class DownloadDetailsWindow : Window, INotifyPropertyChanged
             : "Current: Unlimited";
     }
 
-    private System.Windows.Media.Brush ResolveStatusBrush(DownloadStatus status)
+    private MediaBrush ResolveStatusBrush(DownloadStatus status)
     {
         var key = status switch
         {
@@ -302,7 +364,7 @@ public partial class DownloadDetailsWindow : Window, INotifyPropertyChanged
             DownloadStatus.Cancelled => "StatusCancelledBrush",
             _ => "StatusQueuedBrush"
         };
-        return (System.Windows.Media.Brush)(Application.Current.TryFindResource(key) ?? System.Windows.Media.Brushes.Gray);
+        return (MediaBrush)(Application.Current.TryFindResource(key) ?? MediaBrushes.Gray);
     }
 
     private static SegmentStatus MapSingleStreamStatus(DownloadStatus status)
@@ -399,12 +461,67 @@ public partial class DownloadDetailsWindow : Window, INotifyPropertyChanged
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
     }
 
-    public sealed class SegmentProgressViewModel
+    public sealed class SegmentProgressViewModel : INotifyPropertyChanged
     {
+        private string _rangeText = string.Empty;
+        private string _downloadedText = string.Empty;
+        private string _speedText = "0 B/s";
+        private string _statusText = string.Empty;
+        private double _progressPercent;
+        private string _progressText = "0.0%";
+
+        public event PropertyChangedEventHandler? PropertyChanged;
+
         public SegmentProgressViewModel(DownloadSegment segment)
         {
+            SegmentId = segment.Id;
             Index = segment.Index + 1;
             SegmentLabel = $"Conn {Index}";
+            UpdateFrom(segment);
+        }
+
+        public string SegmentId { get; }
+        public int Index { get; }
+        public string SegmentLabel { get; }
+
+        public string RangeText
+        {
+            get => _rangeText;
+            private set => SetField(ref _rangeText, value);
+        }
+
+        public string DownloadedText
+        {
+            get => _downloadedText;
+            private set => SetField(ref _downloadedText, value);
+        }
+
+        public string SpeedText
+        {
+            get => _speedText;
+            private set => SetField(ref _speedText, value);
+        }
+
+        public string StatusText
+        {
+            get => _statusText;
+            private set => SetField(ref _statusText, value);
+        }
+
+        public double ProgressPercent
+        {
+            get => _progressPercent;
+            private set => SetField(ref _progressPercent, value);
+        }
+
+        public string ProgressText
+        {
+            get => _progressText;
+            private set => SetField(ref _progressText, value);
+        }
+
+        public void UpdateFrom(DownloadSegment segment)
+        {
             RangeText = $"{FileHelper.FormatSize(segment.StartByte)} - {FileHelper.FormatSize(segment.EndByte)}";
             DownloadedText = FileHelper.FormatSize(segment.DownloadedBytes);
             SpeedText = segment.TransferRate > 0 ? FileHelper.FormatSpeed(segment.TransferRate) : "0 B/s";
@@ -413,13 +530,16 @@ public partial class DownloadDetailsWindow : Window, INotifyPropertyChanged
             ProgressText = $"{ProgressPercent:F1}%";
         }
 
-        public int Index { get; }
-        public string SegmentLabel { get; }
-        public string RangeText { get; }
-        public string DownloadedText { get; }
-        public string SpeedText { get; }
-        public string StatusText { get; }
-        public double ProgressPercent { get; }
-        public string ProgressText { get; }
+        private bool SetField<T>(ref T field, T value, [CallerMemberName] string? propertyName = null)
+        {
+            if (EqualityComparer<T>.Default.Equals(field, value))
+            {
+                return false;
+            }
+
+            field = value;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
+            return true;
+        }
     }
 }

@@ -33,7 +33,44 @@ public class MyDMDatabase : IDisposable
         using var cmd = conn.CreateCommand();
         cmd.CommandText = Schema;
         cmd.ExecuteNonQuery();
+        ApplyMigrations(conn);
         SeedCategories(conn);
+    }
+
+    private static void ApplyMigrations(SqliteConnection conn)
+    {
+        EnsureColumn(conn, "Downloads", "TransferRate", "REAL NOT NULL DEFAULT 0");
+        EnsureColumn(conn, "Downloads", "TimeLeftSeconds", "REAL NULL");
+        EnsureColumn(conn, "Segments", "TransferRate", "REAL NOT NULL DEFAULT 0");
+    }
+
+    private static void EnsureColumn(SqliteConnection conn, string tableName, string columnName, string definition)
+    {
+        using var check = conn.CreateCommand();
+        check.CommandText = $"PRAGMA table_info({tableName});";
+
+        var exists = false;
+        using (var reader = check.ExecuteReader())
+        {
+            while (reader.Read())
+            {
+                var current = reader.GetString(reader.GetOrdinal("name"));
+                if (string.Equals(current, columnName, StringComparison.OrdinalIgnoreCase))
+                {
+                    exists = true;
+                    break;
+                }
+            }
+        }
+
+        if (exists)
+        {
+            return;
+        }
+
+        using var alter = conn.CreateCommand();
+        alter.CommandText = $"ALTER TABLE {tableName} ADD COLUMN {columnName} {definition};";
+        alter.ExecuteNonQuery();
     }
 
     private void SeedCategories(SqliteConnection conn)
@@ -93,6 +130,8 @@ CREATE TABLE IF NOT EXISTS Downloads (
     ErrorMessage    TEXT,
     RetryCount      INTEGER DEFAULT 0,
     SupportsRange   INTEGER DEFAULT 1,
+    TransferRate    REAL DEFAULT 0,
+    TimeLeftSeconds REAL,
     CreatedAt       TEXT NOT NULL,
     CompletedAt     TEXT,
     LastAttemptAt   TEXT
@@ -106,7 +145,8 @@ CREATE TABLE IF NOT EXISTS Segments (
     EndByte         INTEGER NOT NULL,
     DownloadedBytes INTEGER DEFAULT 0,
     Status          INTEGER DEFAULT 0,
-    TempFile        TEXT
+    TempFile        TEXT,
+    TransferRate    REAL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS Queues (

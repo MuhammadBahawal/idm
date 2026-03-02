@@ -21,8 +21,8 @@ public class DownloadRepository
         cmd.CommandText = @"INSERT INTO Downloads 
             (Id,Url,FileName,SavePath,Category,Status,TotalSize,DownloadedSize,Connections,SpeedLimit,
              Checksum,ChecksumVerified,Description,MediaType,ManifestUrl,SelectedQuality,ErrorMessage,
-             RetryCount,SupportsRange,CreatedAt,CompletedAt,LastAttemptAt)
-            VALUES (@id,@url,@fn,@sp,@cat,@st,@ts,@ds,@conn,@sl,@cs,@csv,@desc,@mt,@mu,@sq,@em,@rc,@sr,@ca,@coa,@la)";
+             RetryCount,SupportsRange,TransferRate,TimeLeftSeconds,CreatedAt,CompletedAt,LastAttemptAt)
+            VALUES (@id,@url,@fn,@sp,@cat,@st,@ts,@ds,@conn,@sl,@cs,@csv,@desc,@mt,@mu,@sq,@em,@rc,@sr,@tr,@tls,@ca,@coa,@la)";
         BindDownloadParams(cmd, item);
         cmd.ExecuteNonQuery();
     }
@@ -35,7 +35,8 @@ public class DownloadRepository
             Url=@url,FileName=@fn,SavePath=@sp,Category=@cat,Status=@st,TotalSize=@ts,
             DownloadedSize=@ds,Connections=@conn,SpeedLimit=@sl,Checksum=@cs,ChecksumVerified=@csv,
             Description=@desc,MediaType=@mt,ManifestUrl=@mu,SelectedQuality=@sq,ErrorMessage=@em,
-            RetryCount=@rc,SupportsRange=@sr,CreatedAt=@ca,CompletedAt=@coa,LastAttemptAt=@la
+            RetryCount=@rc,SupportsRange=@sr,TransferRate=@tr,TimeLeftSeconds=@tls,
+            CreatedAt=@ca,CompletedAt=@coa,LastAttemptAt=@la
             WHERE Id=@id";
         BindDownloadParams(cmd, item);
         cmd.ExecuteNonQuery();
@@ -98,13 +99,21 @@ public class DownloadRepository
         return items;
     }
 
-    public void UpdateProgress(string id, long downloadedSize, DownloadStatus status)
+    public void UpdateProgress(string id, long downloadedSize, DownloadStatus status, double transferRate = 0, TimeSpan? timeLeft = null)
     {
         var conn = _db.GetConnection();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "UPDATE Downloads SET DownloadedSize=@ds, Status=@st, LastAttemptAt=@la WHERE Id=@id";
+        cmd.CommandText = @"UPDATE Downloads
+            SET DownloadedSize=@ds,
+                Status=@st,
+                TransferRate=@tr,
+                TimeLeftSeconds=@tls,
+                LastAttemptAt=@la
+            WHERE Id=@id";
         cmd.Parameters.AddWithValue("@ds", downloadedSize);
         cmd.Parameters.AddWithValue("@st", (int)status);
+        cmd.Parameters.AddWithValue("@tr", Math.Max(0, transferRate));
+        cmd.Parameters.AddWithValue("@tls", (object?)timeLeft?.TotalSeconds ?? DBNull.Value);
         cmd.Parameters.AddWithValue("@la", DateTime.UtcNow.ToString("o"));
         cmd.Parameters.AddWithValue("@id", id);
         cmd.ExecuteNonQuery();
@@ -120,8 +129,8 @@ public class DownloadRepository
         {
             using var cmd = conn.CreateCommand();
             cmd.Transaction = txn;
-            cmd.CommandText = @"INSERT INTO Segments (Id,DownloadId,Idx,StartByte,EndByte,DownloadedBytes,Status,TempFile)
-                VALUES (@id,@did,@idx,@sb,@eb,@db,@st,@tf)";
+            cmd.CommandText = @"INSERT INTO Segments (Id,DownloadId,Idx,StartByte,EndByte,DownloadedBytes,Status,TempFile,TransferRate)
+                VALUES (@id,@did,@idx,@sb,@eb,@db,@st,@tf,@tr)";
             cmd.Parameters.AddWithValue("@id", seg.Id);
             cmd.Parameters.AddWithValue("@did", seg.DownloadId);
             cmd.Parameters.AddWithValue("@idx", seg.Index);
@@ -130,6 +139,7 @@ public class DownloadRepository
             cmd.Parameters.AddWithValue("@db", seg.DownloadedBytes);
             cmd.Parameters.AddWithValue("@st", (int)seg.Status);
             cmd.Parameters.AddWithValue("@tf", (object?)seg.TempFile ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("@tr", Math.Max(0, seg.TransferRate));
             cmd.ExecuteNonQuery();
         }
         txn.Commit();
@@ -139,9 +149,10 @@ public class DownloadRepository
     {
         var conn = _db.GetConnection();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "UPDATE Segments SET DownloadedBytes=@db, Status=@st WHERE Id=@id";
+        cmd.CommandText = "UPDATE Segments SET DownloadedBytes=@db, Status=@st, TransferRate=@tr WHERE Id=@id";
         cmd.Parameters.AddWithValue("@db", seg.DownloadedBytes);
         cmd.Parameters.AddWithValue("@st", (int)seg.Status);
+        cmd.Parameters.AddWithValue("@tr", Math.Max(0, seg.TransferRate));
         cmd.Parameters.AddWithValue("@id", seg.Id);
         cmd.ExecuteNonQuery();
     }
@@ -165,7 +176,8 @@ public class DownloadRepository
                 EndByte = reader.GetInt64(reader.GetOrdinal("EndByte")),
                 DownloadedBytes = reader.GetInt64(reader.GetOrdinal("DownloadedBytes")),
                 Status = (SegmentStatus)reader.GetInt32(reader.GetOrdinal("Status")),
-                TempFile = reader.IsDBNull(reader.GetOrdinal("TempFile")) ? null : reader.GetString(reader.GetOrdinal("TempFile"))
+                TempFile = reader.IsDBNull(reader.GetOrdinal("TempFile")) ? null : reader.GetString(reader.GetOrdinal("TempFile")),
+                TransferRate = ReadDouble(reader, "TransferRate")
             });
         }
         return segs;
@@ -286,6 +298,8 @@ public class DownloadRepository
         cmd.Parameters.AddWithValue("@em", (object?)item.ErrorMessage ?? DBNull.Value);
         cmd.Parameters.AddWithValue("@rc", item.RetryCount);
         cmd.Parameters.AddWithValue("@sr", item.SupportsRange ? 1 : 0);
+        cmd.Parameters.AddWithValue("@tr", Math.Max(0, item.TransferRate));
+        cmd.Parameters.AddWithValue("@tls", (object?)item.TimeLeft?.TotalSeconds ?? DBNull.Value);
         cmd.Parameters.AddWithValue("@ca", item.CreatedAt.ToString("o"));
         cmd.Parameters.AddWithValue("@coa", (object?)item.CompletedAt?.ToString("o") ?? DBNull.Value);
         cmd.Parameters.AddWithValue("@la", (object?)item.LastAttemptAt?.ToString("o") ?? DBNull.Value);
@@ -314,9 +328,48 @@ public class DownloadRepository
             ErrorMessage = reader.IsDBNull(reader.GetOrdinal("ErrorMessage")) ? null : reader.GetString(reader.GetOrdinal("ErrorMessage")),
             RetryCount = reader.GetInt32(reader.GetOrdinal("RetryCount")),
             SupportsRange = reader.GetInt32(reader.GetOrdinal("SupportsRange")) == 1,
+            TransferRate = ReadDouble(reader, "TransferRate"),
+            TimeLeft = ReadNullableTimeSpan(reader, "TimeLeftSeconds"),
             CreatedAt = DateTime.Parse(reader.GetString(reader.GetOrdinal("CreatedAt"))),
             CompletedAt = reader.IsDBNull(reader.GetOrdinal("CompletedAt")) ? null : DateTime.Parse(reader.GetString(reader.GetOrdinal("CompletedAt"))),
             LastAttemptAt = reader.IsDBNull(reader.GetOrdinal("LastAttemptAt")) ? null : DateTime.Parse(reader.GetString(reader.GetOrdinal("LastAttemptAt")))
         };
+    }
+
+    private static double ReadDouble(SqliteDataReader reader, string column)
+    {
+        try
+        {
+            var ordinal = reader.GetOrdinal(column);
+            return reader.IsDBNull(ordinal) ? 0 : reader.GetDouble(ordinal);
+        }
+        catch (IndexOutOfRangeException)
+        {
+            return 0;
+        }
+    }
+
+    private static TimeSpan? ReadNullableTimeSpan(SqliteDataReader reader, string column)
+    {
+        try
+        {
+            var ordinal = reader.GetOrdinal(column);
+            if (reader.IsDBNull(ordinal))
+            {
+                return null;
+            }
+
+            var seconds = reader.GetDouble(ordinal);
+            if (!double.IsFinite(seconds) || seconds < 0)
+            {
+                return null;
+            }
+
+            return TimeSpan.FromSeconds(seconds);
+        }
+        catch (IndexOutOfRangeException)
+        {
+            return null;
+        }
     }
 }

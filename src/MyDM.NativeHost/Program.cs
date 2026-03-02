@@ -1,7 +1,11 @@
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.ComponentModel;
 using System.Diagnostics;
+using System.IO.Pipes;
+using System.Globalization;
+using MyDM.Core;
 using MyDM.Core.Data;
 using MyDM.Core.Engine;
 using MyDM.Core.Media;
@@ -233,6 +237,7 @@ internal static class Program
                 requestHeaders: headers);
 
             await _engine.StartDownloadAsync(item.Id);
+            SendIpcSignal(item.Id);
 
             await LogAsync("info", "download.added", requestId, new
             {
@@ -321,6 +326,7 @@ internal static class Program
             _repository!.Update(item);
 
             await _engine.StartDownloadAsync(item.Id);
+            SendIpcSignal(item.Id);
 
             await LogAsync("info", "media.added", requestId, new
             {
@@ -412,6 +418,7 @@ internal static class Program
                     requestHeaders: headers);
 
                 await _engine.StartDownloadAsync(item.Id);
+                SendIpcSignal(item.Id);
 
                 await LogAsync("info", "video.download.added", requestId, new
                 {
@@ -458,6 +465,8 @@ internal static class Program
             // Start both downloads
             var videoTask = _engine.StartDownloadAsync(videoItem.Id);
             var audioTask = _engine.StartDownloadAsync(audioItem.Id);
+            SendIpcSignal(videoItem.Id);
+            SendIpcSignal(audioItem.Id);
             await Task.WhenAll(videoTask, audioTask);
 
             // Wait for both to complete (poll status)
@@ -626,6 +635,8 @@ internal static class Program
             }, requestId);
         }
 
+        DownloadItem? trackedDownload = null;
+
         try
         {
             await LogAsync("info", "youtube.gui.click_received", requestId, new
@@ -677,6 +688,10 @@ internal static class Program
 
             var outputTemplate = BuildYouTubeOutputTemplate(saveDir, fileName, title);
             var formatSelector = BuildYouTubeFormatSelector(quality);
+            trackedDownload = CreateTrackedYtDlpDownload(videoUrl, saveDir, fileName, title, quality);
+            _repository!.Insert(trackedDownload);
+            SendIpcSignal(trackedDownload.Id);
+            var progressState = new YtDlpProgressState();
 
             var headersWithoutCookie = headers != null
                 ? new Dictionary<string, string>(headers, StringComparer.OrdinalIgnoreCase)
@@ -819,7 +834,19 @@ internal static class Program
                     executable = attempt.FileName
                 });
 
-                var result = await ExecuteProcessAsync(attempt.FileName, attempt.Args, YtDlpTimeoutMs);
+                var result = await ExecuteProcessAsync(
+                    attempt.FileName,
+                    attempt.Args,
+                    YtDlpTimeoutMs,
+                    (line, isError) =>
+                    {
+                        if (trackedDownload == null || progressState == null)
+                        {
+                            return;
+                        }
+
+                        ApplyYtDlpProgressLine(trackedDownload, progressState, line, isError);
+                    });
                 if (!result.Started)
                 {
                     await LogAsync("warn", "youtube.runner.unavailable", requestId, new
@@ -886,6 +913,7 @@ internal static class Program
 
             if (lastResult == null || (!lastResult.Value.Started && string.IsNullOrWhiteSpace(runnerUsed)))
             {
+                MarkTrackedYtDlpFailed(trackedDownload, "yt-dlp runtime was not found.");
                 return AddRequestId(new NativeMessage
                 {
                     Type = "error",
@@ -902,6 +930,7 @@ internal static class Program
 
             if (string.IsNullOrWhiteSpace(runnerUsed))
             {
+                MarkTrackedYtDlpFailed(trackedDownload, $"yt-dlp download failed. {Tail(finalResult.CombinedOutput, 300)}");
                 return AddRequestId(new NativeMessage
                 {
                     Type = "error",
@@ -943,6 +972,7 @@ internal static class Program
 
             if (!fileExists)
             {
+                MarkTrackedYtDlpFailed(trackedDownload, "yt-dlp reported success but output file was not found.");
                 return AddRequestId(new NativeMessage
                 {
                     Type = "error",
@@ -963,13 +993,14 @@ internal static class Program
                 outputPath = outputPath ?? string.Empty,
                 quality = quality ?? string.Empty
             });
+            CompleteTrackedYtDlpDownload(trackedDownload, outputPath, resolvedFileName, fileSize);
 
             return AddRequestId(new NativeMessage
             {
                 Type = "download_added",
                 Payload = new Dictionary<string, object>
                 {
-                    { "downloadId", Guid.NewGuid().ToString("N") },
+                    { "downloadId", trackedDownload?.Id ?? Guid.NewGuid().ToString("N") },
                     { "fileName", resolvedFileName },
                     { "status", "Complete" },
                     { "quality", quality ?? string.Empty },
@@ -985,6 +1016,7 @@ internal static class Program
         }
         catch (Exception ex)
         {
+            MarkTrackedYtDlpFailed(trackedDownload, ex.Message);
             await LogAsync("error", "youtube.download.failed", requestId, new
             {
                 videoUrl,
@@ -1256,6 +1288,9 @@ internal static class Program
             }, requestId);
         }
 
+        DownloadItem? trackedDownload = null;
+        YtDlpProgressState? progressState = null;
+
         try
         {
             var saveDir = ResolveVideoSaveDirectory();
@@ -1275,6 +1310,10 @@ internal static class Program
             }
 
             var outputTemplate = BuildYouTubeOutputTemplate(saveDir, fileName, title);
+            trackedDownload = CreateTrackedYtDlpDownload(videoUrl, saveDir, fileName, title, formatId);
+            _repository!.Insert(trackedDownload);
+            SendIpcSignal(trackedDownload.Id);
+            progressState = new YtDlpProgressState();
 
             // Build format selector: prefer exact format + best audio (yt-dlp merges them)
             // Fallback chain: exact+bestaudio → best muxed at same height → best overall
@@ -1331,7 +1370,19 @@ internal static class Program
                     commandLine = BuildCommandLineForLog(runner.Executable, fullArgs)
                 });
 
-                lastResult = await ExecuteProcessAsync(runner.Executable, fullArgs, YtDlpTimeoutMs);
+                lastResult = await ExecuteProcessAsync(
+                    runner.Executable,
+                    fullArgs,
+                    YtDlpTimeoutMs,
+                    (line, isError) =>
+                    {
+                        if (trackedDownload == null || progressState == null)
+                        {
+                            return;
+                        }
+
+                        ApplyYtDlpProgressLine(trackedDownload, progressState, line, isError);
+                    });
                 hasResult = true;
 
                 if (lastResult.Started && lastResult.ExitCode == 0)
@@ -1349,6 +1400,7 @@ internal static class Program
                     formatId,
                     error = Tail(errorMsg, 500)
                 });
+                MarkTrackedYtDlpFailed(trackedDownload, $"Download failed: {Tail(errorMsg, 300)}");
 
                 return AddRequestId(new NativeMessage
                 {
@@ -1371,22 +1423,30 @@ internal static class Program
                 runnerUsed,
                 outputPath
             });
+            var resolvedFileName = Path.GetFileName(outputPath ?? fileName ?? "video.mp4");
+            var fileSize = !string.IsNullOrWhiteSpace(outputPath) && File.Exists(outputPath)
+                ? new FileInfo(outputPath).Length
+                : 0L;
+            CompleteTrackedYtDlpDownload(trackedDownload, outputPath, resolvedFileName, fileSize);
 
             return AddRequestId(new NativeMessage
             {
                 Type = "download_added",
                 Payload = new Dictionary<string, object>
                 {
+                    { "downloadId", trackedDownload?.Id ?? Guid.NewGuid().ToString("N") },
+                    { "status", "Complete" },
                     { "success", true },
                     { "outputPath", outputPath ?? "" },
                     { "runner", runnerUsed ?? "" },
                     { "formatId", formatId },
-                    { "fileName", Path.GetFileName(outputPath ?? fileName ?? "video.mp4") }
+                    { "fileName", resolvedFileName }
                 }
             }, requestId);
         }
         catch (Exception ex)
         {
+            MarkTrackedYtDlpFailed(trackedDownload, ex.Message);
             await LogAsync("error", "youtube.download_format.error", requestId, new
             {
                 videoUrl,
@@ -1684,7 +1744,7 @@ internal static class Program
             "--no-playlist",
             "--ignore-config",
             "--verbose",
-            "--no-progress",
+            "--progress",
             "--newline",
             "--restrict-filenames",
             "--print", "after_move:filepath",
@@ -1936,6 +1996,338 @@ internal static class Program
         return null;
     }
 
+    private static readonly Regex YtDlpPercentRegex = new(
+        @"^\[download\]\s+(?<pct>\d{1,3}(?:\.\d+)?)%",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    private static readonly Regex YtDlpTotalRegex = new(
+        @"\bof\s+(?<total>~?\s*\d+(?:\.\d+)?\s*[KMGTP]?i?B)\b",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    private static readonly Regex YtDlpSpeedRegex = new(
+        @"\bat\s+(?<speed>\d+(?:\.\d+)?\s*[KMGTP]?i?B/s)\b",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    private static readonly Regex YtDlpEtaRegex = new(
+        @"\bETA\s+(?<eta>\d{1,2}:\d{2}(?::\d{2})?)\b",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    private static readonly Regex AnsiEscapeRegex = new(
+        @"\x1B\[[0-9;?]*[ -/]*[@-~]",
+        RegexOptions.Compiled);
+    private static readonly Regex YtDlpDestinationRegex = new(
+        @"^\[download\]\s+Destination:\s+(?<path>.+)$",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    private static readonly Regex YtDlpAfterMoveRegex = new(
+        @"^\[download\]\s+(?<path>[A-Za-z]:\\.+)$",
+        RegexOptions.Compiled);
+    private static readonly Regex YtDlpMergingRegex = new(
+        @"^\[(Merger|ffmpeg)\]",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+    private sealed class YtDlpProgressState
+    {
+        public object SyncRoot { get; } = new();
+        public DateTime LastPersistUtc { get; set; } = DateTime.MinValue;
+        public long LastKnownTotalBytes { get; set; }
+    }
+
+    private static DownloadItem CreateTrackedYtDlpDownload(
+        string sourceUrl,
+        string saveDir,
+        string? requestedFileName,
+        string? title,
+        string? qualityLabel)
+    {
+        var resolvedFileName = BuildFallbackFileName(requestedFileName, title);
+        return new DownloadItem
+        {
+            Url = sourceUrl,
+            FileName = resolvedFileName,
+            SavePath = saveDir,
+            Category = "Video",
+            Status = DownloadStatus.Downloading,
+            Connections = 1,
+            SupportsRange = false,
+            LastAttemptAt = DateTime.UtcNow,
+            Description = string.IsNullOrWhiteSpace(qualityLabel)
+                ? "YouTube download (yt-dlp)"
+                : $"YouTube download (yt-dlp, {qualityLabel})"
+        };
+    }
+
+    private static void ApplyYtDlpProgressLine(DownloadItem item, YtDlpProgressState state, string line, bool isError)
+    {
+        if (_repository == null || string.IsNullOrWhiteSpace(line))
+        {
+            return;
+        }
+
+        lock (state.SyncRoot)
+        {
+            line = NormalizeYtDlpLine(line);
+            if (string.IsNullOrWhiteSpace(line))
+            {
+                return;
+            }
+
+            var now = DateTime.UtcNow;
+
+            if (YtDlpMergingRegex.IsMatch(line))
+            {
+                if (item.Status != DownloadStatus.Merging)
+                {
+                    item.Status = DownloadStatus.Merging;
+                    item.LastAttemptAt = now;
+                    PersistTrackedYtDlpProgress(item, state, force: true);
+                }
+                return;
+            }
+
+            var destinationMatch = YtDlpDestinationRegex.Match(line);
+            if (destinationMatch.Success)
+            {
+                var destination = destinationMatch.Groups["path"].Value.Trim().Trim('"');
+                if (Path.IsPathRooted(destination))
+                {
+                    UpdateTrackedPath(item, destination);
+                    PersistTrackedYtDlpProgress(item, state, force: true);
+                }
+                return;
+            }
+
+            var afterMoveMatch = YtDlpAfterMoveRegex.Match(line);
+            if (afterMoveMatch.Success)
+            {
+                var moved = afterMoveMatch.Groups["path"].Value.Trim().Trim('"');
+                if (Path.IsPathRooted(moved))
+                {
+                    UpdateTrackedPath(item, moved);
+                    PersistTrackedYtDlpProgress(item, state, force: true);
+                }
+                return;
+            }
+
+            var percentMatch = YtDlpPercentRegex.Match(line);
+            if (!percentMatch.Success)
+            {
+                return;
+            }
+
+            if (!double.TryParse(percentMatch.Groups["pct"].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out var percent))
+            {
+                return;
+            }
+
+            percent = Math.Clamp(percent, 0, 100);
+            var totalBytes = 0L;
+            var totalMatch = YtDlpTotalRegex.Match(line);
+            var hasTotal = totalMatch.Success
+                && TryParseSizeToBytes(totalMatch.Groups["total"].Value, out totalBytes);
+
+            if (hasTotal && totalBytes > 0)
+            {
+                state.LastKnownTotalBytes = totalBytes;
+                item.TotalSize = totalBytes;
+            }
+            else if (state.LastKnownTotalBytes > 0)
+            {
+                item.TotalSize = state.LastKnownTotalBytes;
+            }
+
+            if (item.TotalSize > 0)
+            {
+                var downloaded = (long)Math.Round(item.TotalSize * (percent / 100.0), MidpointRounding.AwayFromZero);
+                item.DownloadedSize = Math.Max(item.DownloadedSize, downloaded);
+            }
+
+            var speedMatch = YtDlpSpeedRegex.Match(line);
+            if (speedMatch.Success
+                && TryParseSizeToBytes(speedMatch.Groups["speed"].Value.Replace("/s", "", StringComparison.OrdinalIgnoreCase), out var speedBytes))
+            {
+                item.TransferRate = speedBytes;
+            }
+
+            var etaMatch = YtDlpEtaRegex.Match(line);
+            if (etaMatch.Success
+                && TryParseEta(etaMatch.Groups["eta"].Value, out var eta))
+            {
+                item.TimeLeft = eta;
+            }
+            else if (!isError)
+            {
+                item.TimeLeft = null;
+            }
+
+            item.Status = DownloadStatus.Downloading;
+            item.LastAttemptAt = now;
+            PersistTrackedYtDlpProgress(item, state, force: false);
+        }
+    }
+
+    private static string NormalizeYtDlpLine(string raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return string.Empty;
+        }
+
+        var cleaned = raw.Replace('\r', ' ').Trim();
+        cleaned = AnsiEscapeRegex.Replace(cleaned, string.Empty);
+        return cleaned.Trim();
+    }
+
+    private static void CompleteTrackedYtDlpDownload(DownloadItem? item, string? outputPath, string fallbackFileName, long fileSize)
+    {
+        if (item == null || _repository == null)
+        {
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(outputPath) && Path.IsPathRooted(outputPath))
+        {
+            UpdateTrackedPath(item, outputPath);
+        }
+        else
+        {
+            item.FileName = UrlHelper.SanitizeFileName(fallbackFileName);
+        }
+
+        if (fileSize > 0)
+        {
+            item.TotalSize = fileSize;
+            item.DownloadedSize = fileSize;
+        }
+        else if (item.TotalSize > 0)
+        {
+            item.DownloadedSize = item.TotalSize;
+        }
+
+        item.Status = DownloadStatus.Complete;
+        item.CompletedAt = DateTime.UtcNow;
+        item.TransferRate = 0;
+        item.TimeLeft = TimeSpan.Zero;
+        item.ErrorMessage = null;
+        _repository.Update(item);
+    }
+
+    private static void MarkTrackedYtDlpFailed(DownloadItem? item, string errorMessage)
+    {
+        if (item == null || _repository == null)
+        {
+            return;
+        }
+
+        item.Status = DownloadStatus.Error;
+        item.ErrorMessage = string.IsNullOrWhiteSpace(errorMessage) ? "Download failed." : errorMessage;
+        item.TransferRate = 0;
+        item.TimeLeft = null;
+        item.LastAttemptAt = DateTime.UtcNow;
+        _repository.Update(item);
+    }
+
+    private static void UpdateTrackedPath(DownloadItem item, string fullPath)
+    {
+        var fileName = Path.GetFileName(fullPath);
+        var directory = Path.GetDirectoryName(fullPath);
+        if (!string.IsNullOrWhiteSpace(fileName))
+        {
+            item.FileName = UrlHelper.SanitizeFileName(fileName);
+        }
+
+        if (!string.IsNullOrWhiteSpace(directory))
+        {
+            item.SavePath = directory;
+        }
+    }
+
+    private static void PersistTrackedYtDlpProgress(DownloadItem item, YtDlpProgressState state, bool force)
+    {
+        if (_repository == null)
+        {
+            return;
+        }
+
+        var now = DateTime.UtcNow;
+        if (!force && (now - state.LastPersistUtc).TotalMilliseconds < 120)
+        {
+            return;
+        }
+
+        if (item.TotalSize > 0 && item.DownloadedSize > item.TotalSize)
+        {
+            item.DownloadedSize = item.TotalSize;
+        }
+
+        _repository.Update(item);
+        state.LastPersistUtc = now;
+    }
+
+    private static bool TryParseSizeToBytes(string raw, out long bytes)
+    {
+        bytes = 0;
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return false;
+        }
+
+        var cleaned = raw.Trim().TrimStart('~').Trim();
+        var match = Regex.Match(cleaned, @"^(?<value>\d+(?:\.\d+)?)\s*(?<unit>[KMGTP]?i?B)$", RegexOptions.IgnoreCase);
+        if (!match.Success)
+        {
+            return false;
+        }
+
+        if (!double.TryParse(match.Groups["value"].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out var value))
+        {
+            return false;
+        }
+
+        var factor = match.Groups["unit"].Value.ToUpperInvariant() switch
+        {
+            "B" => 1d,
+            "KB" or "KIB" => 1024d,
+            "MB" or "MIB" => 1024d * 1024d,
+            "GB" or "GIB" => 1024d * 1024d * 1024d,
+            "TB" or "TIB" => 1024d * 1024d * 1024d * 1024d,
+            "PB" or "PIB" => 1024d * 1024d * 1024d * 1024d * 1024d,
+            _ => 0d
+        };
+
+        if (factor <= 0)
+        {
+            return false;
+        }
+
+        bytes = (long)Math.Round(value * factor, MidpointRounding.AwayFromZero);
+        return bytes >= 0;
+    }
+
+    private static bool TryParseEta(string raw, out TimeSpan eta)
+    {
+        eta = TimeSpan.Zero;
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return false;
+        }
+
+        var parts = raw.Trim().Split(':');
+        if (parts.Length == 2
+            && int.TryParse(parts[0], NumberStyles.None, CultureInfo.InvariantCulture, out var minutes)
+            && int.TryParse(parts[1], NumberStyles.None, CultureInfo.InvariantCulture, out var seconds))
+        {
+            eta = new TimeSpan(0, minutes, seconds);
+            return true;
+        }
+
+        if (parts.Length == 3
+            && int.TryParse(parts[0], NumberStyles.None, CultureInfo.InvariantCulture, out var hours)
+            && int.TryParse(parts[1], NumberStyles.None, CultureInfo.InvariantCulture, out minutes)
+            && int.TryParse(parts[2], NumberStyles.None, CultureInfo.InvariantCulture, out seconds))
+        {
+            eta = new TimeSpan(hours, minutes, seconds);
+            return true;
+        }
+
+        return false;
+    }
+
     private static string BuildCommandLineForLog(string fileName, IReadOnlyList<string> args)
     {
         var quotedArgs = args.Select(arg =>
@@ -1970,7 +2362,8 @@ internal static class Program
     private static async Task<ProcessExecutionResult> ExecuteProcessAsync(
         string fileName,
         IReadOnlyList<string> args,
-        int timeoutMs)
+        int timeoutMs,
+        Action<string, bool>? onOutputLine = null)
     {
         var stdout = new StringBuilder();
         var stderr = new StringBuilder();
@@ -1994,6 +2387,7 @@ internal static class Program
             if (!string.IsNullOrWhiteSpace(eventArgs.Data))
             {
                 stdout.AppendLine(eventArgs.Data);
+                onOutputLine?.Invoke(eventArgs.Data, false);
             }
         };
         process.ErrorDataReceived += (_, eventArgs) =>
@@ -2001,6 +2395,7 @@ internal static class Program
             if (!string.IsNullOrWhiteSpace(eventArgs.Data))
             {
                 stderr.AppendLine(eventArgs.Data);
+                onOutputLine?.Invoke(eventArgs.Data, true);
             }
         };
 
@@ -2255,4 +2650,43 @@ internal static class Program
             _logLock.Release();
         }
     }
+
+    /// <summary>
+    /// Fire-and-forget: signal the WPF App that a download started so it can show the progress window.
+    /// </summary>
+    private static void SendIpcSignal(string downloadId)
+    {
+        _ = Task.Run(async () =>
+        {
+            const int maxAttempts = 8;
+            for (var attempt = 1; attempt <= maxAttempts; attempt++)
+            {
+                try
+                {
+                    using var pipe = new NamedPipeClientStream(".", IpcConstants.PipeName, PipeDirection.Out);
+                    await pipe.ConnectAsync(600); // Short attempt, retried below.
+                    using var writer = new StreamWriter(pipe) { AutoFlush = true };
+                    await writer.WriteLineAsync(IpcConstants.MakeDownloadStartedMessage(downloadId));
+                    return;
+                }
+                catch
+                {
+                    if (attempt == maxAttempts)
+                    {
+                        return;
+                    }
+
+                    try
+                    {
+                        await Task.Delay(250);
+                    }
+                    catch
+                    {
+                        return;
+                    }
+                }
+            }
+        });
+    }
 }
+

@@ -1,5 +1,6 @@
 using System.Windows;
 using System.Windows.Controls;
+using MyDM.App.Utilities;
 using MyDM.Core.Data;
 using MyDM.Core.Engine;
 using MyDM.Core.Media;
@@ -16,6 +17,7 @@ public partial class SettingsWindow : Window
     public SettingsWindow(DownloadRepository repository, DownloadEngine engine)
     {
         InitializeComponent();
+        WindowLayoutHelper.ApplyAdaptiveLayout(this, widthRatio: 0.82, heightRatio: 0.88);
         _repository = repository;
         _engine = engine;
         LoadSettings();

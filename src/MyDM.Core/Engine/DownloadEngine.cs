@@ -355,6 +355,17 @@ public class DownloadEngine : IDisposable
     }
 
     /// <summary>
+    /// Get an in-memory live snapshot for downloads currently active in this process.
+    /// Returns null when the download is not actively running here.
+    /// </summary>
+    public DownloadItem? GetLiveDownload(string downloadId)
+    {
+        return _activeDownloads.ContainsKey(downloadId) && _downloadCache.TryGetValue(downloadId, out var live)
+            ? live
+            : null;
+    }
+
+    /// <summary>
     /// Get all downloads.
     /// </summary>
     public List<DownloadItem> GetAllDownloads()
@@ -439,7 +450,12 @@ public class DownloadEngine : IDisposable
                         {
                             lastProgressUpdate = now;
                             _repository.UpdateSegment(seg);
-                            _repository.UpdateProgress(item.Id, item.DownloadedSize, DownloadStatus.Downloading);
+                            _repository.UpdateProgress(
+                                item.Id,
+                                item.DownloadedSize,
+                                DownloadStatus.Downloading,
+                                item.TransferRate,
+                                item.TimeLeft);
                             OnProgressUpdated?.Invoke(item);
                         }
                     }
@@ -491,7 +507,12 @@ public class DownloadEngine : IDisposable
                 if ((now - lastUpdate).TotalMilliseconds > 120)
                 {
                     lastUpdate = now;
-                    _repository.UpdateProgress(item.Id, downloaded, DownloadStatus.Downloading);
+                    _repository.UpdateProgress(
+                        item.Id,
+                        downloaded,
+                        DownloadStatus.Downloading,
+                        item.TransferRate,
+                        item.TimeLeft);
                     OnProgressUpdated?.Invoke(item);
                 }
             },
