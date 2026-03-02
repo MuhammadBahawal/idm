@@ -2,12 +2,39 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:ui="clr-namespace:MyDM.App.Utilities"
-        Title="{Binding WindowTitle}" Height="680" Width="980" MinHeight="600" MinWidth="860"
+        Title="{Binding WindowTitle}" Height="560" Width="860" MinHeight="500" MinWidth="760"
         WindowStartupLocation="CenterScreen"
         Background="{StaticResource WindowBackgroundBrush}"
-        FontFamily="Segoe UI">
+        FontFamily="Segoe UI"
+        UseLayoutRounding="True"
+        SnapsToDevicePixels="True">
 
-    <Grid Margin="14">
+    <Window.Resources>
+        <Style x:Key="MetricCardStyle" TargetType="Border">
+            <Setter Property="CornerRadius" Value="10"/>
+            <Setter Property="Padding" Value="10,8"/>
+            <Setter Property="Margin" Value="0,0,8,8"/>
+            <Setter Property="Background" Value="{StaticResource ChunkCardBrush}"/>
+            <Setter Property="BorderBrush" Value="#E2E9F4"/>
+            <Setter Property="BorderThickness" Value="1"/>
+        </Style>
+
+        <Style x:Key="MetricLabelStyle" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="10"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Foreground" Value="{StaticResource TextMutedBrush}"/>
+        </Style>
+
+        <Style x:Key="MetricValueStyle" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
+            <Setter Property="Margin" Value="0,3,0,0"/>
+            <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
+        </Style>
+    </Window.Resources>
+
+    <Grid Margin="12">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
@@ -15,113 +42,104 @@
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <Border Grid.Row="0" CornerRadius="12" Padding="14"
+        <Border Grid.Row="0" CornerRadius="12" Padding="12"
                 Background="{StaticResource PanelCardBrush}"
                 BorderBrush="{StaticResource PanelBorderBrush}" BorderThickness="1">
             <Grid>
                 <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="*"/>
                     <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
 
-                <StackPanel Grid.Column="0">
-                    <TextBlock Text="Download Progress" FontSize="12" FontWeight="SemiBold"
+                <Border Width="36" Height="36" CornerRadius="18" Background="#E8F0FD" BorderBrush="#CBDCF7" BorderThickness="1"
+                        VerticalAlignment="Top">
+                    <TextBlock Text="&#xE896;" FontFamily="Segoe MDL2 Assets" FontSize="16"
+                               Foreground="{StaticResource PrimaryBrush}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                </Border>
+
+                <StackPanel Grid.Column="1" Margin="10,0,0,0">
+                    <TextBlock Text="Realtime Download Monitor" FontSize="11" FontWeight="SemiBold"
                                Foreground="{StaticResource TextMutedBrush}"/>
-                    <TextBlock Text="{Binding FileName}" FontSize="19" FontWeight="SemiBold"
-                               Foreground="{StaticResource TextBrush}" Margin="0,4,0,0" TextTrimming="CharacterEllipsis"/>
-                    <TextBlock Text="{Binding Url}" FontSize="11" Foreground="{StaticResource TextMutedBrush}"
-                               Margin="0,3,0,0" TextTrimming="CharacterEllipsis"/>
+                    <TextBlock Text="{Binding FileName}" FontSize="18" FontWeight="SemiBold"
+                               Foreground="{StaticResource TextBrush}" Margin="0,3,0,0" TextTrimming="CharacterEllipsis"/>
+                    <TextBlock Text="{Binding Url}" FontSize="10.5" Foreground="{StaticResource TextMutedBrush}"
+                               Margin="0,2,0,0" TextTrimming="CharacterEllipsis"/>
                 </StackPanel>
 
-                <Border Grid.Column="1" VerticalAlignment="Center" Padding="12,7"
+                <Border Grid.Column="2" VerticalAlignment="Center" Padding="11,6"
                         CornerRadius="999" Background="{Binding StatusBadgeBrush}">
-                    <TextBlock Text="{Binding StatusText}" FontSize="12" FontWeight="Bold"
+                    <TextBlock Text="{Binding StatusText}" FontSize="11.5" FontWeight="Bold"
                                Foreground="{StaticResource TextBrush}"/>
                 </Border>
             </Grid>
         </Border>
 
-        <Border Grid.Row="1" Margin="0,10,0,0" CornerRadius="12" Padding="14"
+        <Border Grid.Row="1" Margin="0,8,0,0" CornerRadius="12" Padding="12"
                 Background="{StaticResource PanelCardBrush}"
                 BorderBrush="{StaticResource PanelBorderBrush}" BorderThickness="1">
             <StackPanel>
                 <Grid>
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="*"/>
-                    </Grid.ColumnDefinitions>
-
-                    <StackPanel Grid.Column="0" Margin="0,0,12,0">
-                        <TextBlock Text="File Size" Style="{StaticResource MetaLabelText}"/>
-                        <TextBlock Text="{Binding FileSizeText}" Style="{StaticResource MetaValueText}"/>
-                    </StackPanel>
-
-                    <StackPanel Grid.Column="1" Margin="0,0,12,0">
-                        <TextBlock Text="Downloaded" Style="{StaticResource MetaLabelText}"/>
-                        <TextBlock Text="{Binding DownloadedText}" Style="{StaticResource MetaValueText}"/>
-                    </StackPanel>
-
-                    <StackPanel Grid.Column="2" Margin="0,0,12,0">
-                        <TextBlock Text="Speed" Style="{StaticResource MetaLabelText}"/>
-                        <TextBlock Text="{Binding TransferRateText}" Style="{StaticResource MetaValueText}"/>
-                    </StackPanel>
-
-                    <StackPanel Grid.Column="3">
-                        <TextBlock Text="Remaining Time" Style="{StaticResource MetaLabelText}"/>
-                        <TextBlock Text="{Binding TimeLeftText}" Style="{StaticResource MetaValueText}"/>
-                    </StackPanel>
-                </Grid>
-
-                <Grid Margin="0,12,0,0">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*"/>
                         <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
-                    <TextBlock Grid.Column="0" Text="Overall Progress" FontSize="12" FontWeight="SemiBold"
+                    <TextBlock Grid.Column="0" Text="Overall Progress" FontSize="11" FontWeight="SemiBold"
                                Foreground="{StaticResource TextMutedBrush}"/>
                     <TextBlock Grid.Column="1" Text="{Binding ProgressText}" FontSize="12" FontWeight="Bold"
                                Foreground="{StaticResource PrimaryBrush}"/>
                 </Grid>
 
                 <ProgressBar Maximum="100"
-                             Height="12"
+                             Height="10"
                              Margin="0,6,0,0"
                              ui:ProgressBarAnimationHelper.TargetValue="{Binding ProgressPercent, Mode=OneWay}"/>
 
-                <Grid Margin="0,10,0,0">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="*"/>
-                    </Grid.ColumnDefinitions>
-
-                    <StackPanel Grid.Column="0" Margin="0,0,12,0">
-                        <TextBlock Text="Resume Support" Style="{StaticResource MetaLabelText}"/>
-                        <TextBlock Text="{Binding ResumeCapabilityText}" Style="{StaticResource MetaValueText}"/>
-                    </StackPanel>
-                    <StackPanel Grid.Column="1" Margin="0,0,12,0">
-                        <TextBlock Text="Connections" Style="{StaticResource MetaLabelText}"/>
-                        <TextBlock Text="{Binding ConnectionsText}" Style="{StaticResource MetaValueText}"/>
-                    </StackPanel>
-                    <StackPanel Grid.Column="2" Margin="0,0,12,0">
-                        <TextBlock Text="Category" Style="{StaticResource MetaLabelText}"/>
-                        <TextBlock Text="{Binding CategoryText}" Style="{StaticResource MetaValueText}"/>
-                    </StackPanel>
-                    <StackPanel Grid.Column="3">
-                        <TextBlock Text="Status" Style="{StaticResource MetaLabelText}"/>
-                        <TextBlock Text="{Binding StatusText}" Style="{StaticResource MetaValueText}"/>
-                    </StackPanel>
-                </Grid>
+                <UniformGrid Columns="3" Margin="0,10,0,0">
+                    <Border Style="{StaticResource MetricCardStyle}">
+                        <StackPanel>
+                            <TextBlock Text="File Size" Style="{StaticResource MetricLabelStyle}"/>
+                            <TextBlock Text="{Binding FileSizeText}" Style="{StaticResource MetricValueStyle}"/>
+                        </StackPanel>
+                    </Border>
+                    <Border Style="{StaticResource MetricCardStyle}">
+                        <StackPanel>
+                            <TextBlock Text="Downloaded" Style="{StaticResource MetricLabelStyle}"/>
+                            <TextBlock Text="{Binding DownloadedText}" Style="{StaticResource MetricValueStyle}"/>
+                        </StackPanel>
+                    </Border>
+                    <Border Style="{StaticResource MetricCardStyle}">
+                        <StackPanel>
+                            <TextBlock Text="Speed" Style="{StaticResource MetricLabelStyle}"/>
+                            <TextBlock Text="{Binding TransferRateText}" Style="{StaticResource MetricValueStyle}"/>
+                        </StackPanel>
+                    </Border>
+                    <Border Style="{StaticResource MetricCardStyle}">
+                        <StackPanel>
+                            <TextBlock Text="Remaining" Style="{StaticResource MetricLabelStyle}"/>
+                            <TextBlock Text="{Binding TimeLeftText}" Style="{StaticResource MetricValueStyle}"/>
+                        </StackPanel>
+                    </Border>
+                    <Border Style="{StaticResource MetricCardStyle}">
+                        <StackPanel>
+                            <TextBlock Text="Connections" Style="{StaticResource MetricLabelStyle}"/>
+                            <TextBlock Text="{Binding ConnectionsText}" Style="{StaticResource MetricValueStyle}"/>
+                        </StackPanel>
+                    </Border>
+                    <Border Style="{StaticResource MetricCardStyle}" Margin="0,0,0,8">
+                        <StackPanel>
+                            <TextBlock Text="Resume Support" Style="{StaticResource MetricLabelStyle}"/>
+                            <TextBlock Text="{Binding ResumeCapabilityText}" Style="{StaticResource MetricValueStyle}"/>
+                        </StackPanel>
+                    </Border>
+                </UniformGrid>
             </StackPanel>
         </Border>
 
-        <Grid Grid.Row="2" Margin="0,10,0,0">
+        <Grid Grid.Row="2" Margin="0,8,0,0">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="2*"/>
-                <ColumnDefinition Width="10"/>
+                <ColumnDefinition Width="1.7*"/>
+                <ColumnDefinition Width="8"/>
                 <ColumnDefinition Width="*"/>
             </Grid.ColumnDefinitions>
 
@@ -134,24 +152,24 @@
                         <RowDefinition Height="*"/>
                     </Grid.RowDefinitions>
 
-                    <TextBlock Grid.Row="0" Text="Per-Connection Progress" FontSize="12" FontWeight="SemiBold"
+                    <TextBlock Grid.Row="0" Text="Per-Connection Progress" FontSize="11" FontWeight="SemiBold"
                                Foreground="{StaticResource TextMutedBrush}" Margin="0,0,0,8"/>
                     <ListView Grid.Row="1" ItemsSource="{Binding SegmentRows}">
                         <ListView.View>
                             <GridView>
-                                <GridViewColumn Header="#" Width="34" DisplayMemberBinding="{Binding Index}"/>
-                                <GridViewColumn Header="Range" Width="170" DisplayMemberBinding="{Binding RangeText}"/>
-                                <GridViewColumn Header="Downloaded" Width="120" DisplayMemberBinding="{Binding DownloadedText}"/>
-                                <GridViewColumn Header="Speed" Width="105" DisplayMemberBinding="{Binding SpeedText}"/>
-                                <GridViewColumn Header="Status" Width="95" DisplayMemberBinding="{Binding StatusText}"/>
-                                <GridViewColumn Header="Progress" Width="150">
+                                <GridViewColumn Header="#" Width="30" DisplayMemberBinding="{Binding Index}"/>
+                                <GridViewColumn Header="Range" Width="140" DisplayMemberBinding="{Binding RangeText}"/>
+                                <GridViewColumn Header="Downloaded" Width="98" DisplayMemberBinding="{Binding DownloadedText}"/>
+                                <GridViewColumn Header="Speed" Width="90" DisplayMemberBinding="{Binding SpeedText}"/>
+                                <GridViewColumn Header="Status" Width="82" DisplayMemberBinding="{Binding StatusText}"/>
+                                <GridViewColumn Header="Progress" Width="128">
                                     <GridViewColumn.CellTemplate>
                                         <DataTemplate>
-                                            <Grid Width="140">
+                                            <Grid Width="118">
                                                 <ProgressBar Maximum="100"
-                                                             Height="7"
+                                                             Height="6"
                                                              ui:ProgressBarAnimationHelper.TargetValue="{Binding ProgressPercent, Mode=OneWay}"/>
-                                                <TextBlock Text="{Binding ProgressText}" FontSize="10" Margin="0,8,0,0"
+                                                <TextBlock Text="{Binding ProgressText}" FontSize="9.5" Margin="0,7,0,0"
                                                            HorizontalAlignment="Center" Foreground="{StaticResource TextMutedBrush}"/>
                                             </Grid>
                                         </DataTemplate>
@@ -172,47 +190,47 @@
                         <RowDefinition Height="*"/>
                     </Grid.RowDefinitions>
 
-                    <TextBlock Grid.Row="0" Text="Live Logs" FontSize="12" FontWeight="SemiBold"
+                    <TextBlock Grid.Row="0" Text="Live Logs" FontSize="11" FontWeight="SemiBold"
                                Foreground="{StaticResource TextMutedBrush}" Margin="0,0,0,8"/>
                     <ListBox Grid.Row="1" ItemsSource="{Binding LogEntries}" FontFamily="Cascadia Mono"
-                             FontSize="11" BorderThickness="0" Background="Transparent"
+                             FontSize="10.5" BorderThickness="0" Background="Transparent"
                              Foreground="{StaticResource TextMutedBrush}"/>
                 </Grid>
             </Border>
         </Grid>
 
-        <Border Grid.Row="3" Margin="0,10,0,0" CornerRadius="12" Padding="10"
+        <Border Grid.Row="3" Margin="0,8,0,0" CornerRadius="12" Padding="10"
                 Background="{StaticResource PanelCardBrush}"
                 BorderBrush="{StaticResource PanelBorderBrush}" BorderThickness="1">
             <Grid>
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="Auto"/>
-                    <ColumnDefinition Width="110"/>
-                    <ColumnDefinition Width="Auto"/>
-                    <ColumnDefinition Width="*"/>
-                    <ColumnDefinition Width="Auto"/>
-                    <ColumnDefinition Width="Auto"/>
-                    <ColumnDefinition Width="Auto"/>
-                </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
 
-                <TextBlock Grid.Column="0" Text="Speed Limit (KB/s)" VerticalAlignment="Center"
-                           Foreground="{StaticResource TextMutedBrush}" Margin="0,0,8,0"/>
-                <TextBox Grid.Column="1" Text="{Binding SpeedLimitInput, UpdateSourceTrigger=PropertyChanged}" VerticalAlignment="Center"/>
-                <Button Grid.Column="2" Content="Apply" Style="{StaticResource ToolbarButton}" Margin="8,0,0,0"
-                        Padding="14,8" Click="ApplySpeedLimit_Click"/>
+                <DockPanel Grid.Row="0" LastChildFill="True" VerticalAlignment="Center">
+                    <StackPanel DockPanel.Dock="Left" Orientation="Horizontal" VerticalAlignment="Center">
+                        <TextBlock Text="Speed Limit (KB/s)" VerticalAlignment="Center"
+                                   Foreground="{StaticResource TextMutedBrush}" Margin="0,0,8,0"/>
+                        <TextBox Width="95" Text="{Binding SpeedLimitInput, UpdateSourceTrigger=PropertyChanged}" VerticalAlignment="Center"/>
+                        <Button Content="Apply" Style="{StaticResource ToolbarButton}" Margin="8,0,0,0"
+                                Padding="12,7" Click="ApplySpeedLimit_Click"/>
+                    </StackPanel>
 
-                <TextBlock Grid.Column="3" Text="{Binding SpeedLimitStatusText}" Margin="14,0,0,0"
-                           VerticalAlignment="Center" Foreground="{StaticResource TextMutedBrush}"/>
+                    <TextBlock Text="{Binding SpeedLimitStatusText}" Margin="12,0,0,0"
+                               VerticalAlignment="Center" Foreground="{StaticResource TextMutedBrush}"/>
+                </DockPanel>
 
-                <Button Grid.Column="4" Content="{Binding PauseResumeButtonText}" Style="{StaticResource PrimaryButton}"
-                        IsEnabled="{Binding CanPauseResume}" Margin="0,0,8,0" Padding="18,8"
-                        Click="PauseResume_Click"/>
-                <Button Grid.Column="5" Content="Cancel" Style="{StaticResource DangerButton}" Padding="18,8"
-                        Margin="0,0,8,0" IsEnabled="{Binding CanCancel}" Click="CancelDownload_Click"/>
-                <Button Grid.Column="6" Content="Close" Style="{StaticResource ToolbarButton}" Padding="18,8"
-                        Click="Close_Click"/>
+                <StackPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,10,0,0">
+                    <Button Content="{Binding PauseResumeButtonText}" Style="{StaticResource PrimaryButton}"
+                            IsEnabled="{Binding CanPauseResume}" Margin="0,0,8,0" Padding="16,8"
+                            Click="PauseResume_Click"/>
+                    <Button Content="Cancel" Style="{StaticResource DangerButton}" Padding="16,8"
+                            Margin="0,0,8,0" IsEnabled="{Binding CanCancel}" Click="CancelDownload_Click"/>
+                    <Button Content="Close" Style="{StaticResource ToolbarButton}" Padding="16,8"
+                            Click="Close_Click"/>
+                </StackPanel>
             </Grid>
         </Border>
     </Grid>
 </Window>
-

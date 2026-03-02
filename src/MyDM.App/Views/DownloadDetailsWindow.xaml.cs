@@ -171,7 +171,7 @@ public partial class DownloadDetailsWindow : Window, INotifyPropertyChanged
         bool autoCloseOnCompletion = false)
     {
         InitializeComponent();
-        WindowLayoutHelper.ApplyAdaptiveLayout(this, widthRatio: 0.9, heightRatio: 0.9);
+        WindowLayoutHelper.ApplyAdaptiveLayout(this, widthRatio: 0.82, heightRatio: 0.8);
         _item = item;
         _repository = repository;
         _engine = engine;
