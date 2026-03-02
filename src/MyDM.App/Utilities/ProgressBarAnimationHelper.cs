@@ -43,20 +43,26 @@ public static class ProgressBarAnimationHelper
 
         var currentValue = progressBar.Value;
         var delta = Math.Abs(nextValue - currentValue);
-        if (delta < 0.1d)
+        if (delta < 0.02d)
         {
             progressBar.Value = nextValue;
             return;
         }
 
-        // Keep motion smooth while still staying responsive to frequent updates.
-        var durationMs = Math.Clamp(delta * 7d, 90d, 300d);
+        // Use a softer curve and slightly longer duration to avoid visible "jumps".
+        var durationMs = Math.Clamp(140d + (delta * 16d), 160d, 700d);
         var animation = new DoubleAnimation
         {
+            From = currentValue,
             To = nextValue,
             Duration = TimeSpan.FromMilliseconds(durationMs),
-            EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut },
-            FillBehavior = FillBehavior.HoldEnd
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseInOut },
+            FillBehavior = FillBehavior.Stop
+        };
+        animation.Completed += (_, _) =>
+        {
+            progressBar.BeginAnimation(RangeBase.ValueProperty, null);
+            progressBar.Value = nextValue;
         };
 
         progressBar.BeginAnimation(RangeBase.ValueProperty, animation, HandoffBehavior.SnapshotAndReplace);

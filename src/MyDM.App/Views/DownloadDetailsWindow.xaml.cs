@@ -18,6 +18,8 @@ public partial class DownloadDetailsWindow : Window, INotifyPropertyChanged
     private readonly DownloadRepository _repository;
     private readonly DownloadEngine _engine;
     private readonly DispatcherTimer _refreshTimer;
+    private bool _autoCloseOnCompletion;
+    private bool _autoCloseScheduled;
     private DateTime _lastLogRefresh = DateTime.MinValue;
     private DownloadItem _item;
 
@@ -162,13 +164,18 @@ public partial class DownloadDetailsWindow : Window, INotifyPropertyChanged
     public bool CanCancel =>
         _item.Status is not DownloadStatus.Complete and not DownloadStatus.Cancelled;
 
-    public DownloadDetailsWindow(DownloadItem item, DownloadRepository repository, DownloadEngine engine)
+    public DownloadDetailsWindow(
+        DownloadItem item,
+        DownloadRepository repository,
+        DownloadEngine engine,
+        bool autoCloseOnCompletion = false)
     {
         InitializeComponent();
         WindowLayoutHelper.ApplyAdaptiveLayout(this, widthRatio: 0.9, heightRatio: 0.9);
         _item = item;
         _repository = repository;
         _engine = engine;
+        _autoCloseOnCompletion = autoCloseOnCompletion;
         DataContext = this;
 
         _engine.OnProgressUpdated += HandleEngineProgressUpdated;
@@ -181,6 +188,12 @@ public partial class DownloadDetailsWindow : Window, INotifyPropertyChanged
         RefreshSnapshot(forceLogs: true);
         SpeedLimitInput = _item.SpeedLimit > 0 ? (_item.SpeedLimit / 1024.0).ToString("F0") : "0";
         UpdateSpeedLimitStatus();
+    }
+
+    public void EnableAutoCloseOnCompletion()
+    {
+        _autoCloseOnCompletion = true;
+        TryAutoCloseOnCompletion();
     }
 
     protected override void OnClosed(EventArgs e)
@@ -243,11 +256,34 @@ public partial class DownloadDetailsWindow : Window, INotifyPropertyChanged
         StatusBadgeBrush = ResolveStatusBrush(_item.Status);
         UpdateSpeedLimitStatus();
         UpdateSegments();
+        TryAutoCloseOnCompletion();
 
         if (forceLogs)
         {
             UpdateLogs();
         }
+    }
+
+    private void TryAutoCloseOnCompletion()
+    {
+        if (!_autoCloseOnCompletion || _autoCloseScheduled)
+        {
+            return;
+        }
+
+        if (_item.Status != DownloadStatus.Complete)
+        {
+            return;
+        }
+
+        _autoCloseScheduled = true;
+        Dispatcher.BeginInvoke(() =>
+        {
+            if (IsVisible)
+            {
+                Close();
+            }
+        }, DispatcherPriority.Background);
     }
 
     private static void OverlayLiveTelemetry(DownloadItem target, DownloadItem live)

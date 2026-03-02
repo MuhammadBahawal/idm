@@ -16,6 +16,7 @@ const DOWNLOAD_EXTENSIONS = new Set([
     "mp3", "flac", "wav", "aac", "ogg", "wma", "m4a",
     "jpg", "jpeg", "png", "gif", "bmp", "svg", "webp"
 ]);
+const PAGE_LIKE_EXTENSIONS = new Set(["htm", "html", "xhtml", "php", "asp", "aspx", "jsp", "cfm", "json", "xml"]);
 
 interface ExtMessage {
     type: string;
@@ -79,6 +80,8 @@ let nativePort: chrome.runtime.Port | null = null;
 let lastDisconnectReason = "";
 const pendingRequests = new Map<string, PendingRequest>();
 const tabStreamCandidates = new Map<number, StreamCandidate[]>();
+const browserDownloadHandoffsInFlight = new Set<number>();
+const browserDownloadsManagedByMyDM = new Set<number>();
 
 const YOUTUBE_ITAG_PROFILES: Record<number, ItagProfile> = {
     17: { qualityLabel: "144p", height: 144, hasVideo: true, hasAudio: true, muxed: true },
@@ -375,9 +378,154 @@ function parseExtensionFromUrl(url: string): string | null {
     }
 }
 
+function parseExtensionFromFilePath(filePath?: string): string | null {
+    if (!filePath) return null;
+    const normalized = filePath.replace(/\\/g, "/");
+    const name = normalized.split("/").pop() || "";
+    const dot = name.lastIndexOf(".");
+    if (dot <= 0 || dot === name.length - 1) return null;
+    return name.slice(dot + 1).toLowerCase();
+}
+
+function extractFileNameFromPath(filePath?: string): string | undefined {
+    if (!filePath) return undefined;
+    const normalized = filePath.replace(/\\/g, "/");
+    const name = normalized.split("/").pop()?.trim() || "";
+    return name.length > 0 ? name : undefined;
+}
+
 function isDirectDownloadUrl(url: string): boolean {
     const ext = parseExtensionFromUrl(url);
     return ext !== null && DOWNLOAD_EXTENSIONS.has(ext);
+}
+
+function isLikelyBinaryMime(mimeType?: string): boolean {
+    if (!mimeType) return false;
+    const normalized = mimeType.toLowerCase().split(";")[0].trim();
+    if (normalized.length === 0) return false;
+
+    if (normalized.startsWith("image/")) return true;
+    if (MEDIA_CONTENT_TYPES.some((prefix) => normalized.startsWith(prefix))) return true;
+
+    if (!normalized.startsWith("application/")) return false;
+    if (normalized.includes("json")
+        || normalized.includes("javascript")
+        || normalized.includes("ecmascript")
+        || normalized.includes("xml")
+        || normalized.includes("xhtml")) {
+        return false;
+    }
+
+    return true;
+}
+
+function inferNativeFileName(item: chrome.downloads.DownloadItem, downloadUrl: string): string | undefined {
+    const fromPath = extractFileNameFromPath(item.filename);
+    if (fromPath) return fromPath;
+
+    try {
+        const parsed = new URL(downloadUrl);
+        const file = decodeURIComponent(parsed.pathname.split("/").pop() || "").trim();
+        if (!file) return undefined;
+        return file.replace(/[/\\]/g, "_");
+    } catch {
+        return undefined;
+    }
+}
+
+function shouldInterceptBrowserDownload(item: chrome.downloads.DownloadItem): boolean {
+    if (item.byExtensionId === chrome.runtime.id) {
+        return false;
+    }
+
+    const url = item.finalUrl || item.url || "";
+    if (!url || !/^https?:/i.test(url)) {
+        return false;
+    }
+
+    if (browserDownloadsManagedByMyDM.has(item.id) || browserDownloadHandoffsInFlight.has(item.id)) {
+        return false;
+    }
+
+    const urlExt = parseExtensionFromUrl(url);
+    const fileExt = parseExtensionFromFilePath(item.filename);
+    if ((urlExt && PAGE_LIKE_EXTENSIONS.has(urlExt)) || (fileExt && PAGE_LIKE_EXTENSIONS.has(fileExt))) {
+        return false;
+    }
+
+    if ((urlExt && DOWNLOAD_EXTENSIONS.has(urlExt)) || (fileExt && DOWNLOAD_EXTENSIONS.has(fileExt))) {
+        return true;
+    }
+
+    return isLikelyBinaryMime(item.mime);
+}
+
+async function tryHandoffBrowserDownloadToMyDM(item: chrome.downloads.DownloadItem): Promise<void> {
+    if (!shouldInterceptBrowserDownload(item)) {
+        return;
+    }
+
+    const downloadId = item.id;
+    const url = item.finalUrl || item.url || "";
+    if (!url) {
+        return;
+    }
+
+    browserDownloadHandoffsInFlight.add(downloadId);
+    try {
+        const headers = await buildHeadersWithCookies(url);
+        const result = await postToNative("add_download", {
+            url,
+            filename: inferNativeFileName(item, url),
+            referrer: item.referrer || "",
+            headers
+        });
+
+        if (!result.success) {
+            appendDebugLog("warn", "browser_download.handoff_failed", {
+                downloadId,
+                url: url.substring(0, 180),
+                error: result.error || "Native host rejected request"
+            });
+            return;
+        }
+
+        browserDownloadsManagedByMyDM.add(downloadId);
+        appendDebugLog("info", "browser_download.handed_to_mydm", {
+            downloadId,
+            url: url.substring(0, 180),
+            nativeRequestId: result.requestId || ""
+        });
+
+        chrome.downloads.cancel(downloadId, () => {
+            const cancelError = chrome.runtime.lastError?.message;
+            if (cancelError) {
+                appendDebugLog("warn", "browser_download.cancel_failed", {
+                    downloadId,
+                    error: cancelError
+                });
+                return;
+            }
+
+            chrome.downloads.erase({ id: downloadId }, () => {
+                const eraseError = chrome.runtime.lastError?.message;
+                if (eraseError) {
+                    appendDebugLog("warn", "browser_download.erase_failed", {
+                        downloadId,
+                        error: eraseError
+                    });
+                }
+            });
+        });
+    } catch (error) {
+        appendDebugLog("error", "browser_download.handoff_error", {
+            downloadId,
+            url: url.substring(0, 180),
+            error: safeString(error)
+        });
+    } finally {
+        browserDownloadHandoffsInFlight.delete(downloadId);
+    }
 }
 
 function parseIntParam(url: URL, key: string): number | undefined {
@@ -942,6 +1090,23 @@ async function installGoogleVideoHeaderRules(): Promise<void> {
 chrome.tabs.onRemoved.addListener((tabId) => {
     tabStreamCandidates.delete(tabId);
     persistStreamCandidates();
+});
+
+chrome.downloads.onCreated.addListener((item) => {
+    void tryHandoffBrowserDownloadToMyDM(item);
+});
+
+chrome.downloads.onChanged.addListener((delta) => {
+    const state = delta.state?.current;
+    if (state && state !== "in_progress") {
+        browserDownloadHandoffsInFlight.delete(delta.id);
+        browserDownloadsManagedByMyDM.delete(delta.id);
+    }
+});
+
+chrome.downloads.onErased.addListener((downloadId) => {
+    browserDownloadHandoffsInFlight.delete(downloadId);
+    browserDownloadsManagedByMyDM.delete(downloadId);
 });
 
 chrome.contextMenus.onClicked.addListener((info: chrome.contextMenus.OnClickData, tab?: chrome.tabs.Tab) => {

@@ -193,7 +193,7 @@ public partial class MainViewModel : ObservableObject
     private void ShowDetails()
     {
         if (SelectedDownload == null) return;
-        EnsureDetailsWindow(SelectedDownload.Item, forceOpen: true);
+        EnsureDetailsWindow(SelectedDownload.Item, forceOpen: true, autoCloseOnCompletion: false);
     }
 
     public void FilterByCategory(string category)
@@ -264,7 +264,7 @@ public partial class MainViewModel : ObservableObject
         }
     }
 
-    private void EnsureDetailsWindow(DownloadItem item, bool forceOpen)
+    private void EnsureDetailsWindow(DownloadItem item, bool forceOpen, bool autoCloseOnCompletion)
     {
         if (!forceOpen && !IsAutoDetailsPopupEnabled())
         {
@@ -277,11 +277,15 @@ public partial class MainViewModel : ObservableObject
             {
                 existingWindow.Show();
             }
+            if (autoCloseOnCompletion)
+            {
+                existingWindow.EnableAutoCloseOnCompletion();
+            }
             BringWindowToFront(existingWindow);
             return;
         }
 
-        var details = new Views.DownloadDetailsWindow(item, _repository, _engine);
+        var details = new Views.DownloadDetailsWindow(item, _repository, _engine, autoCloseOnCompletion);
         var owner = Application.Current.MainWindow;
         if (owner != null && owner.IsVisible && owner.WindowState != WindowState.Minimized)
         {
@@ -321,6 +325,10 @@ public partial class MainViewModel : ObservableObject
             }
 
             UpdateDownloadInList(item, updateOrder: true);
+            if (item.Status is DownloadStatus.Queued or DownloadStatus.Downloading or DownloadStatus.Merging)
+            {
+                EnsureDetailsWindow(item, forceOpen: true, autoCloseOnCompletion: true);
+            }
             HandleDownloadStateTransition(item);
         }
         catch
@@ -398,7 +406,7 @@ public partial class MainViewModel : ObservableObject
 
         if (item.Status == DownloadStatus.Downloading && previousStatus != DownloadStatus.Downloading)
         {
-            EnsureDetailsWindow(item, forceOpen: true);
+            EnsureDetailsWindow(item, forceOpen: true, autoCloseOnCompletion: true);
             StatusBarText = $"Downloading: {item.FileName}";
         }
     }

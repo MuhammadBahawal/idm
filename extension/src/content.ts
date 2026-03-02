@@ -87,6 +87,16 @@ const MAX_RESOURCE_REPORT = 120;
 const MIN_IMAGE_OVERLAY_WIDTH = 90;
 const MIN_IMAGE_OVERLAY_HEIGHT = 70;
 const DOWNLOADABLE_EXT_REGEX = /\.(zip|rar|7z|tar|gz|bz2|xz|iso|exe|msi|dmg|deb|rpm|apk|pdf|docx?|xlsx?|pptx?|txt|csv|mp4|mkv|avi|mov|wmv|flv|webm|m4v|mp3|flac|wav|aac|ogg|wma|m4a|jpe?g|png|gif|bmp|svg|webp)(?:$|[?#])/i;
+const DOWNLOAD_WORD_REGEX = /\bdownload\b/i;
+const DOWNLOAD_URL_HINT_REGEX = /(?:\/|[?&])(download|dl)(?:\/|=|$)/i;
+const DOWNLOAD_QUERY_HINTS = [
+    "download",
+    "filename",
+    "file",
+    "attachment",
+    "response-content-disposition",
+    "response-content-type"
+];
 
 const overlayByVideo = new WeakMap<HTMLVideoElement, OverlayController>();
 const activeOverlays = new Set<OverlayController>();
@@ -215,6 +225,81 @@ function inferFileNameFromUrl(url: string, fallbackBase: string): string {
         // ignore
     }
     return sanitizeFileName(fallbackBase);
+}
+
+function extractAnchorFromEvent(event: MouseEvent): HTMLAnchorElement | null {
+    const path = typeof event.composedPath === "function" ? event.composedPath() : [];
+    for (const node of path) {
+        if (node instanceof HTMLAnchorElement && node.href) {
+            return node;
+        }
+    }
+
+    const target = event.target as Element | null;
+    if (!target || typeof target.closest !== "function") {
+        return null;
+    }
+    const anchor = target.closest("a[href]");
+    return anchor instanceof HTMLAnchorElement ? anchor : null;
+}
+
+function getAnchorDownloadLabel(anchor: HTMLAnchorElement): string {
+    return [
+        anchor.textContent || "",
+        anchor.title || "",
+        anchor.getAttribute("aria-label") || "",
+        anchor.getAttribute("data-tooltip") || "",
+        anchor.getAttribute("download") || ""
+    ]
+        .join(" ")
+        .trim();
+}
+
+function shouldAutoInterceptDownloadLink(anchor: HTMLAnchorElement): boolean {
+    const rawHref = anchor.getAttribute("href") || anchor.href || "";
+    if (!rawHref) return false;
+
+    const absoluteUrl = resolveUrl(rawHref, location.href);
+    if (!isHttpUrl(absoluteUrl)) return false;
+
+    if (anchor.hasAttribute("download")) {
+        return true;
+    }
+
+    if (DOWNLOADABLE_EXT_REGEX.test(absoluteUrl)) {
+        return true;
+    }
+
+    const lowerUrl = absoluteUrl.toLowerCase();
+    if (DOWNLOAD_URL_HINT_REGEX.test(lowerUrl)) {
+        return true;
+    }
+
+    let parsed: URL;
+    try {
+        parsed = new URL(absoluteUrl);
+    } catch {
+        return false;
+    }
+
+    for (const key of DOWNLOAD_QUERY_HINTS) {
+        if (parsed.searchParams.has(key)) {
+            return true;
+        }
+    }
+
+    const label = getAnchorDownloadLabel(anchor);
+    const hasDownloadWord = DOWNLOAD_WORD_REGEX.test(label);
+    if (!hasDownloadWord) {
+        return false;
+    }
+
+    if (parsed.origin !== location.origin) {
+        return true;
+    }
+
+    const path = parsed.pathname.toLowerCase();
+    return path.includes("/download") || path.includes("/dl/");
 }
 
 function isYoutubePage(): boolean {
@@ -1642,6 +1727,47 @@ async function reportResources(resources: Array<Record<string, unknown>>): Promi
     }
 }
 
+function installAutoDownloadLinkInterception(): void {
+    document.addEventListener("click", (event: MouseEvent) => {
+        if (event.defaultPrevented) return;
+        if (event.button !== 0) return;
+        if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+
+        const anchor = extractAnchorFromEvent(event);
+        if (!anchor) return;
+        if (!shouldAutoInterceptDownloadLink(anchor)) return;
+
+        const href = anchor.getAttribute("href") || anchor.href || "";
+        const downloadUrl = resolveUrl(href, location.href);
+        if (!isHttpUrl(downloadUrl)) return;
+
+        event.preventDefault();
+        event.stopImmediatePropagation();
+
+        const explicitName = (anchor.getAttribute("download") || "").trim();
+        const fallbackBase = explicitName || "download";
+        const guessedName = inferFileNameFromUrl(downloadUrl, fallbackBase);
+        const fileName = explicitName || (guessedName && guessedName !== "download" ? guessedName : undefined);
+
+        showNotification("Sending to MyDM...");
+        void sendDownloadToBackground({
+            type: "download_with_mydm",
+            url: downloadUrl,
+            filename: fileName,
+            pageUrl: location.href,
+            streamSource: "anchor-auto-intercept"
+        }).then((result) => {
+            if (result.success) {
+                showNotification("Download started in MyDM");
+                return;
+            }
+
+            const message = result.error || "Failed to start download";
+            showNotification(`Download failed: ${message}`, true);
+        });
+    }, true);
+}
+
 function scheduleRescan(reason: string): void {
     if (scanTimer) return;
     scanTimer = setTimeout(() => {
@@ -1792,6 +1918,7 @@ function bootstrap(): void {
     scanForVideos();
     scanForImages();
     void reportResources(collectResources());
+    installAutoDownloadLinkInterception();
     installMutationObserver();
     installNavigationHooks();
     installManifestRequestHooks();
