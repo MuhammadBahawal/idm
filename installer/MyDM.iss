@@ -10,7 +10,7 @@
   #define ReleaseRoot "."
 #endif
 
-#define MyDMAppId "{{2A66A913-65B5-4736-8A55-64F1E7A1A4AF}"
+#define MyDMAppId "{2A66A913-65B5-4736-8A55-64F1E7A1A4AF}"
 
 [Setup]
 AppId={#MyDMAppId}

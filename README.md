@@ -61,15 +61,16 @@ Works for Chrome, Edge, Brave, Opera, and Vivaldi.
 
 1. Open extension popup and confirm connected status.
 2. Start any download from browser.
-3. Confirm MyDM progress popup updates according to downloaded bytes.
-4. Confirm file completes successfully.
+3. If MyDM app was closed, it auto-launches on first download signal.
+4. Confirm MyDM progress popup updates according to downloaded bytes.
+5. Confirm file completes successfully.
 
 ## Troubleshooting (Fast)
 
 1. If extension shows disconnected, run `Register Native Host (All Browsers)` again.
 2. If Chromium extension ID changed, update it in app settings.
 3. After any ID change, restart browser.
-4. YouTube download support needs `yt-dlp` installed.
+4. `yt-dlp` is bundled in setup automatically. If YouTube fails, reinstall latest setup so bundled runtime is refreshed.
 
 ## Maintainer Release Guide
 
@@ -78,6 +79,8 @@ Run from repo root:
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\release.ps1 -Version 1.0.0
 ```
+
+By default this release script now auto-bundles `yt-dlp.exe` into installer output.
 
 Release output:
 - `artifacts/release/<version>/installer/MyDMUserSetup-x64.exe`

@@ -4,9 +4,11 @@ param(
     [string]$Runtime = "win-x64",
     [string]$ChromiumExtensionIds = "gnpallpkcdihlckdkddppkhgblokapdj",
     [string]$FirefoxExtensionIds = "mydm@mydm.app",
+    [string]$YtDlpDownloadUrl = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe",
     [switch]$SkipTests,
     [switch]$SkipExtensionBuild,
     [switch]$SkipInstaller,
+    [switch]$SkipYtDlpBundle,
     [switch]$SkipNpmInstall
 )
 
@@ -34,6 +36,28 @@ function Parse-Ids {
         | ForEach-Object { $_.Trim() } `
         | Where-Object { $_ -match $Pattern } `
         | Sort-Object -Unique
+}
+
+function Download-FileWithRetry {
+    param(
+        [Parameter(Mandatory = $true)][string]$Url,
+        [Parameter(Mandatory = $true)][string]$OutputPath,
+        [int]$MaxAttempts = 3
+    )
+
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        try {
+            Invoke-WebRequest -Uri $Url -OutFile $OutputPath
+            return
+        }
+        catch {
+            if ($attempt -ge $MaxAttempts) {
+                throw
+            }
+
+            Start-Sleep -Seconds ([Math]::Min(2 * $attempt, 6))
+        }
+    }
 }
 
 function Write-NativeHostManifests {
@@ -154,6 +178,30 @@ Invoke-Step -Name "Assemble app bundle" -Action {
     Write-NativeHostManifests -OutputDirectory $bundleRoot -HostExecutablePath (Join-Path $bundleRoot "MyDM.NativeHost.exe") -ChromiumIds $chromiumIds -FirefoxIds $firefoxIds
 }
 
+if (-not $SkipYtDlpBundle) {
+    Invoke-Step -Name "Bundle yt-dlp runtime" -Action {
+        $ytDlpPath = Join-Path $bundleRoot "yt-dlp.exe"
+        $tempPath = Join-Path $releaseRoot "yt-dlp.tmp"
+
+        if (Test-Path $tempPath) {
+            Remove-Item -Path $tempPath -Force
+        }
+
+        Download-FileWithRetry -Url $YtDlpDownloadUrl -OutputPath $tempPath
+        Move-Item -Path $tempPath -Destination $ytDlpPath -Force
+
+        $ytFile = Get-Item -Path $ytDlpPath
+        if ($ytFile.Length -lt 1000000) {
+            throw "Downloaded yt-dlp.exe seems invalid (too small: $($ytFile.Length) bytes)."
+        }
+
+        & $ytDlpPath --version | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            throw "Bundled yt-dlp.exe failed version check. ExitCode=$LASTEXITCODE"
+        }
+    }
+}
+
 if (-not $SkipExtensionBuild) {
     Invoke-Step -Name "Build extension packages (Chromium + Firefox)" -Action {
         Push-Location (Join-Path $repoRoot "extension")
@@ -198,6 +246,7 @@ Invoke-Step -Name "Write release summary" -Action {
         ""
         "App EXE: $(Join-Path $bundleRoot 'MyDM.App.exe')"
         "Native Host EXE: $(Join-Path $bundleRoot 'MyDM.NativeHost.exe')"
+        "yt-dlp EXE: $(Join-Path $bundleRoot 'yt-dlp.exe')"
         "Chromium Manifest: $(Join-Path $bundleRoot 'com.mydm.native.chromium.json')"
         "Firefox Manifest: $(Join-Path $bundleRoot 'com.mydm.native.firefox.json')"
     ) | Set-Content -Path $releaseSummaryPath -Encoding UTF8
@@ -219,6 +268,9 @@ if (-not $SkipInstaller) {
 
         $issPath = Join-Path $repoRoot "installer\MyDM.iss"
         & $iscc "/DMyDMVersion=$Version" "/DMyDMSourceDir=$bundleRoot" "/DReleaseRoot=$releaseRoot" $issPath
+        if ($LASTEXITCODE -ne 0) {
+            throw "Inno Setup build failed. ExitCode=$LASTEXITCODE"
+        }
     }
 }
 

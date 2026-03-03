@@ -25,6 +25,7 @@ internal static class Program
     private static MyDMDatabase? _database;
     private static FfmpegMuxer? _muxer;
     private static readonly SemaphoreSlim _logLock = new(1, 1);
+    private static readonly SemaphoreSlim _appLaunchGate = new(1, 1);
     private static string _logPath = string.Empty;
     private static string _ytDebugLogPath = string.Empty;
     private const int YtDlpTimeoutMs = 30 * 60 * 1000;
@@ -945,7 +946,7 @@ internal static class Program
                     Type = "error",
                     Payload = new Dictionary<string, object>
                     {
-                        { "message", "yt-dlp runtime was not found. Install yt-dlp or python/py + yt_dlp, then restart Chrome." },
+                        { "message", "yt-dlp runtime was not found. Reinstall latest MyDM setup so bundled yt-dlp is restored." },
                         { "code", "YTDLP_NOT_FOUND" },
                         { "triedRunners", runnerSpecs.Select(r => r.DisplayName).ToArray() }
                     }
@@ -2801,24 +2802,32 @@ internal static class Program
     {
         _ = Task.Run(async () =>
         {
-            const int maxAttempts = 8;
+            const int maxAttempts = 12;
+            var launchAttempted = false;
+
             for (var attempt = 1; attempt <= maxAttempts; attempt++)
             {
-                try
+                if (await TrySendDownloadStartedSignalAsync(downloadId))
                 {
-                    using var pipe = new NamedPipeClientStream(".", IpcConstants.PipeName, PipeDirection.Out);
-                    await pipe.ConnectAsync(600); // Short attempt, retried below.
-                    using var writer = new StreamWriter(pipe) { AutoFlush = true };
-                    await writer.WriteLineAsync(IpcConstants.MakeDownloadStartedMessage(downloadId));
                     return;
                 }
-                catch
-                {
-                    if (attempt == maxAttempts)
-                    {
-                        return;
-                    }
 
+                if (!launchAttempted && attempt >= 3)
+                {
+                    launchAttempted = true;
+                    var launched = await TryLaunchDesktopAppAsync();
+                    if (launched)
+                    {
+                        await LogAsync("info", "ipc.app.autolaunch", null, new { downloadId, attempt });
+                    }
+                    else
+                    {
+                        await LogAsync("warn", "ipc.app.autolaunch.failed", null, new { downloadId, attempt });
+                    }
+                }
+
+                if (attempt < maxAttempts)
+                {
                     try
                     {
                         await Task.Delay(250);
@@ -2829,7 +2838,60 @@ internal static class Program
                     }
                 }
             }
+
+            await LogAsync("warn", "ipc.signal.failed", null, new { downloadId });
         });
+    }
+
+    private static async Task<bool> TrySendDownloadStartedSignalAsync(string downloadId)
+    {
+        try
+        {
+            using var pipe = new NamedPipeClientStream(".", IpcConstants.PipeName, PipeDirection.Out);
+            await pipe.ConnectAsync(600);
+            using var writer = new StreamWriter(pipe) { AutoFlush = true };
+            await writer.WriteLineAsync(IpcConstants.MakeDownloadStartedMessage(downloadId));
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static async Task<bool> TryLaunchDesktopAppAsync()
+    {
+        await _appLaunchGate.WaitAsync();
+        try
+        {
+            // If UI is already running, do not spawn another process.
+            if (Process.GetProcessesByName("MyDM.App").Any())
+            {
+                return true;
+            }
+
+            var appExePath = Path.Combine(AppContext.BaseDirectory, "MyDM.App.exe");
+            if (!File.Exists(appExePath))
+            {
+                return false;
+            }
+
+            var process = Process.Start(new ProcessStartInfo
+            {
+                FileName = appExePath,
+                WorkingDirectory = AppContext.BaseDirectory,
+                UseShellExecute = true
+            });
+            return process != null;
+        }
+        catch
+        {
+            return false;
+        }
+        finally
+        {
+            _appLaunchGate.Release();
+        }
     }
 }
 
