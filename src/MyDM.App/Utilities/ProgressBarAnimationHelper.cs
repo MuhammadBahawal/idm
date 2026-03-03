@@ -42,6 +42,13 @@ public static class ProgressBarAnimationHelper
         }
 
         var currentValue = progressBar.Value;
+
+        // Ignore tiny backward drift caused by out-of-order snapshots.
+        if (nextValue < currentValue && (currentValue - nextValue) < 0.35d)
+        {
+            nextValue = currentValue;
+        }
+
         var delta = Math.Abs(nextValue - currentValue);
         if (delta < 0.02d)
         {
@@ -49,7 +56,7 @@ public static class ProgressBarAnimationHelper
             return;
         }
 
-        // Use a softer curve and slightly longer duration to avoid visible "jumps".
+        // Keep the bar tied to actual byte progress without fake "auto-fill" motion.
         var durationMs = Math.Clamp(140d + (delta * 16d), 160d, 700d);
         var animation = new DoubleAnimation
         {

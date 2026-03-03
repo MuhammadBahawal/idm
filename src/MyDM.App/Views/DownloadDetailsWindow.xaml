@@ -67,8 +67,8 @@
                                Margin="0,2,0,0" TextTrimming="CharacterEllipsis"/>
                 </StackPanel>
 
-                <Border Grid.Column="2" VerticalAlignment="Center" Padding="11,6"
-                        CornerRadius="999" Background="{Binding StatusBadgeBrush}">
+                <Border Grid.Column="2" VerticalAlignment="Center" Padding="12,6"
+                        CornerRadius="10" Background="{Binding StatusBadgeBrush}">
                     <TextBlock Text="{Binding StatusText}" FontSize="11.5" FontWeight="Bold"
                                Foreground="{StaticResource TextBrush}"/>
                 </Border>
@@ -136,68 +136,48 @@
             </StackPanel>
         </Border>
 
-        <Grid Grid.Row="2" Margin="0,8,0,0">
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="1.7*"/>
-                <ColumnDefinition Width="8"/>
-                <ColumnDefinition Width="*"/>
-            </Grid.ColumnDefinitions>
+        <Border Grid.Row="2" Margin="0,8,0,0" CornerRadius="12" Padding="10"
+                Background="{StaticResource PanelCardBrush}"
+                BorderBrush="{StaticResource PanelBorderBrush}" BorderThickness="1"
+                MinHeight="210">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
 
-            <Border Grid.Column="0" CornerRadius="12" Padding="10"
-                    Background="{StaticResource PanelCardBrush}"
-                    BorderBrush="{StaticResource PanelBorderBrush}" BorderThickness="1">
-                <Grid>
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="*"/>
-                    </Grid.RowDefinitions>
-
-                    <TextBlock Grid.Row="0" Text="Per-Connection Progress" FontSize="11" FontWeight="SemiBold"
-                               Foreground="{StaticResource TextMutedBrush}" Margin="0,0,0,8"/>
-                    <ListView Grid.Row="1" ItemsSource="{Binding SegmentRows}">
-                        <ListView.View>
-                            <GridView>
-                                <GridViewColumn Header="#" Width="30" DisplayMemberBinding="{Binding Index}"/>
-                                <GridViewColumn Header="Range" Width="140" DisplayMemberBinding="{Binding RangeText}"/>
-                                <GridViewColumn Header="Downloaded" Width="98" DisplayMemberBinding="{Binding DownloadedText}"/>
-                                <GridViewColumn Header="Speed" Width="90" DisplayMemberBinding="{Binding SpeedText}"/>
-                                <GridViewColumn Header="Status" Width="82" DisplayMemberBinding="{Binding StatusText}"/>
-                                <GridViewColumn Header="Progress" Width="128">
-                                    <GridViewColumn.CellTemplate>
-                                        <DataTemplate>
-                                            <Grid Width="118">
-                                                <ProgressBar Maximum="100"
-                                                             Height="6"
-                                                             ui:ProgressBarAnimationHelper.TargetValue="{Binding ProgressPercent, Mode=OneWay}"/>
-                                                <TextBlock Text="{Binding ProgressText}" FontSize="9.5" Margin="0,7,0,0"
-                                                           HorizontalAlignment="Center" Foreground="{StaticResource TextMutedBrush}"/>
-                                            </Grid>
-                                        </DataTemplate>
-                                    </GridViewColumn.CellTemplate>
-                                </GridViewColumn>
-                            </GridView>
-                        </ListView.View>
-                    </ListView>
-                </Grid>
-            </Border>
-
-            <Border Grid.Column="2" CornerRadius="12" Padding="10"
-                    Background="{StaticResource PanelCardBrush}"
-                    BorderBrush="{StaticResource PanelBorderBrush}" BorderThickness="1">
-                <Grid>
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="*"/>
-                    </Grid.RowDefinitions>
-
-                    <TextBlock Grid.Row="0" Text="Live Logs" FontSize="11" FontWeight="SemiBold"
-                               Foreground="{StaticResource TextMutedBrush}" Margin="0,0,0,8"/>
-                    <ListBox Grid.Row="1" ItemsSource="{Binding LogEntries}" FontFamily="Cascadia Mono"
-                             FontSize="10.5" BorderThickness="0" Background="Transparent"
-                             Foreground="{StaticResource TextMutedBrush}"/>
-                </Grid>
-            </Border>
-        </Grid>
+                <TextBlock Grid.Row="0" Text="Per-Connection Progress" FontSize="12" FontWeight="SemiBold"
+                           Foreground="{StaticResource TextMutedBrush}" Margin="0,0,0,8"/>
+                <ListView Grid.Row="1"
+                          ItemsSource="{Binding SegmentRows}"
+                          FontSize="12"
+                          ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                          ScrollViewer.VerticalScrollBarVisibility="Auto">
+                    <ListView.View>
+                        <GridView>
+                            <GridViewColumn Header="#" Width="42" DisplayMemberBinding="{Binding Index}"/>
+                            <GridViewColumn Header="Range" Width="184" DisplayMemberBinding="{Binding RangeText}"/>
+                            <GridViewColumn Header="Downloaded" Width="130" DisplayMemberBinding="{Binding DownloadedText}"/>
+                            <GridViewColumn Header="Speed" Width="120" DisplayMemberBinding="{Binding SpeedText}"/>
+                            <GridViewColumn Header="Status" Width="110" DisplayMemberBinding="{Binding StatusText}"/>
+                            <GridViewColumn Header="Progress" Width="178">
+                                <GridViewColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <Grid Width="166">
+                                            <ProgressBar Maximum="100"
+                                                         Height="8"
+                                                         ui:ProgressBarAnimationHelper.TargetValue="{Binding ProgressPercent, Mode=OneWay}"/>
+                                            <TextBlock Text="{Binding ProgressText}" FontSize="10.5" Margin="0,9,0,0"
+                                                       HorizontalAlignment="Center" Foreground="{StaticResource TextMutedBrush}"/>
+                                        </Grid>
+                                    </DataTemplate>
+                                </GridViewColumn.CellTemplate>
+                            </GridViewColumn>
+                        </GridView>
+                    </ListView.View>
+                </ListView>
+            </Grid>
+        </Border>
 
         <Border Grid.Row="3" Margin="0,8,0,0" CornerRadius="12" Padding="10"
                 Background="{StaticResource PanelCardBrush}"

@@ -112,55 +112,71 @@ public class SegmentDownloader
         Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
         var existingBytes = File.Exists(outputPath) ? new FileInfo(outputPath).Length : 0L;
 
-        using var request = new HttpRequestMessage(HttpMethod.Get, url);
-        if (existingBytes > 0)
+        // Some servers reject stale resume offsets with 416. In that case, restart cleanly.
+        for (var attempt = 0; attempt < 2; attempt++)
         {
-            request.Headers.Range = new RangeHeaderValue(existingBytes, null);
-        }
-        ApplyHeaders(request, headers);
+            using var request = new HttpRequestMessage(HttpMethod.Get, url);
+            if (existingBytes > 0)
+            {
+                request.Headers.Range = new RangeHeaderValue(existingBytes, null);
+            }
+            ApplyHeaders(request, headers);
 
-        using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
-        if (response.StatusCode == HttpStatusCode.RequestedRangeNotSatisfiable && existingBytes > 0)
-        {
-            onProgress?.Invoke(existingBytes, existingBytes);
-            return;
-        }
-        response.EnsureSuccessStatusCode();
+            using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
+            if (response.StatusCode == HttpStatusCode.RequestedRangeNotSatisfiable && existingBytes > 0 && attempt == 0)
+            {
+                try
+                {
+                    File.Delete(outputPath);
+                }
+                catch
+                {
+                    // If deletion fails, fall through and let EnsureSuccessStatusCode throw on next attempt.
+                }
 
-        var append = existingBytes > 0 && response.StatusCode == HttpStatusCode.PartialContent;
-        if (!append)
-        {
-            existingBytes = 0;
-        }
+                existingBytes = 0;
+                continue;
+            }
 
-        var totalSize = response.Content.Headers.ContentRange?.Length
-            ?? response.Content.Headers.ContentLength
-            ?? 0;
+            response.EnsureSuccessStatusCode();
 
-        using var contentStream = await response.Content.ReadAsStreamAsync(ct);
-        using var fileStream = new FileStream(
-            outputPath,
-            append ? FileMode.Append : FileMode.Create,
-            FileAccess.Write,
-            FileShare.None,
-            BufferSize);
+            var append = existingBytes > 0 && response.StatusCode == HttpStatusCode.PartialContent;
+            if (!append)
+            {
+                existingBytes = 0;
+            }
 
-        var buffer = new byte[BufferSize];
-        long totalRead = existingBytes;
-        int bytesRead;
+            var totalSize = response.Content.Headers.ContentRange?.Length
+                ?? response.Content.Headers.ContentLength
+                ?? 0;
 
-        onProgress?.Invoke(totalRead, totalSize);
-        while ((bytesRead = await contentStream.ReadAsync(buffer, ct)) > 0)
-        {
-            ct.ThrowIfCancellationRequested();
+            using var contentStream = await response.Content.ReadAsStreamAsync(ct);
+            using var fileStream = new FileStream(
+                outputPath,
+                append ? FileMode.Append : FileMode.Create,
+                FileAccess.Write,
+                FileShare.None,
+                BufferSize);
 
-            // Apply speed limiting (delay only, never truncate data)
-            var speedLimit = speedLimitProvider?.Invoke() ?? perDownloadSpeedLimit;
-            await _speedLimiter.RequestBytesAsync(bytesRead, speedLimit, ct);
-            await fileStream.WriteAsync(buffer.AsMemory(0, bytesRead), ct);
+            var buffer = new byte[BufferSize];
+            long totalRead = existingBytes;
+            int bytesRead;
 
-            totalRead += bytesRead;
             onProgress?.Invoke(totalRead, totalSize);
+            while ((bytesRead = await contentStream.ReadAsync(buffer, ct)) > 0)
+            {
+                ct.ThrowIfCancellationRequested();
+
+                // Apply speed limiting (delay only, never truncate data)
+                var speedLimit = speedLimitProvider?.Invoke() ?? perDownloadSpeedLimit;
+                await _speedLimiter.RequestBytesAsync(bytesRead, speedLimit, ct);
+                await fileStream.WriteAsync(buffer.AsMemory(0, bytesRead), ct);
+
+                totalRead += bytesRead;
+                onProgress?.Invoke(totalRead, totalSize);
+            }
+
+            return;
         }
     }
 

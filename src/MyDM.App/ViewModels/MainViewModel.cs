@@ -69,6 +69,8 @@ public partial class MainViewModel : ObservableObject
                 var started = _repository.GetById(dialog.CreatedDownloadId);
                 if (started != null)
                 {
+                    // Always show progress popup on explicit "Start Download" from dialog.
+                    EnsureDetailsWindow(started, forceOpen: true, autoCloseOnCompletion: false);
                     HandleDownloadStateTransition(started);
                 }
             }
@@ -327,7 +329,7 @@ public partial class MainViewModel : ObservableObject
             UpdateDownloadInList(item, updateOrder: true);
             if (item.Status is DownloadStatus.Queued or DownloadStatus.Downloading or DownloadStatus.Merging)
             {
-                EnsureDetailsWindow(item, forceOpen: true, autoCloseOnCompletion: true);
+                EnsureDetailsWindow(item, forceOpen: true, autoCloseOnCompletion: false);
             }
             HandleDownloadStateTransition(item);
         }
@@ -406,7 +408,7 @@ public partial class MainViewModel : ObservableObject
 
         if (item.Status == DownloadStatus.Downloading && previousStatus != DownloadStatus.Downloading)
         {
-            EnsureDetailsWindow(item, forceOpen: true, autoCloseOnCompletion: true);
+            EnsureDetailsWindow(item, forceOpen: true, autoCloseOnCompletion: false);
             StatusBarText = $"Downloading: {item.FileName}";
         }
     }

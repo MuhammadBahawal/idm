@@ -57,3 +57,8 @@ d:\idm\src\MyDM.App\obj\Debug\net8.0-windows\refint\MyDM.App.dll
 d:\idm\src\MyDM.App\obj\Debug\net8.0-windows\MyDM.App.pdb
 d:\idm\src\MyDM.App\obj\Debug\net8.0-windows\MyDM.App.genruntimeconfig.cache
 d:\idm\src\MyDM.App\obj\Debug\net8.0-windows\ref\MyDM.App.dll
+D:\idm\artifacts\build\Debug\net8.0-windows\MyDM.App.exe
+D:\idm\artifacts\build\Debug\net8.0-windows\MyDM.App.deps.json
+D:\idm\artifacts\build\Debug\net8.0-windows\MyDM.App.runtimeconfig.json
+D:\idm\artifacts\build\Debug\net8.0-windows\MyDM.App.dll
+D:\idm\artifacts\build\Debug\net8.0-windows\MyDM.App.pdb

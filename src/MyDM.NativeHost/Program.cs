@@ -1746,6 +1746,7 @@ internal static class Program
             "--verbose",
             "--progress",
             "--newline",
+            "--force-overwrites",
             "--restrict-filenames",
             "--print", "after_move:filepath",
             "-o", outputTemplate,

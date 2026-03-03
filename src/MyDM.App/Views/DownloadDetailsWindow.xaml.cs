@@ -20,7 +20,6 @@ public partial class DownloadDetailsWindow : Window, INotifyPropertyChanged
     private readonly DispatcherTimer _refreshTimer;
     private bool _autoCloseOnCompletion;
     private bool _autoCloseScheduled;
-    private DateTime _lastLogRefresh = DateTime.MinValue;
     private DownloadItem _item;
 
     private string _windowTitle = "Download Monitor";
@@ -43,7 +42,6 @@ public partial class DownloadDetailsWindow : Window, INotifyPropertyChanged
     public event PropertyChangedEventHandler? PropertyChanged;
 
     public ObservableCollection<SegmentProgressViewModel> SegmentRows { get; } = new();
-    public ObservableCollection<string> LogEntries { get; } = new();
 
     public string WindowTitle
     {
@@ -185,7 +183,7 @@ public partial class DownloadDetailsWindow : Window, INotifyPropertyChanged
         _refreshTimer.Tick += RefreshTimerTick;
         _refreshTimer.Start();
 
-        RefreshSnapshot(forceLogs: true);
+        RefreshSnapshot();
         SpeedLimitInput = _item.SpeedLimit > 0 ? (_item.SpeedLimit / 1024.0).ToString("F0") : "0";
         UpdateSpeedLimitStatus();
     }
@@ -206,23 +204,22 @@ public partial class DownloadDetailsWindow : Window, INotifyPropertyChanged
 
     private void RefreshTimerTick(object? sender, EventArgs e)
     {
-        var refreshLogs = (DateTime.UtcNow - _lastLogRefresh).TotalSeconds >= 1;
-        RefreshSnapshot(refreshLogs);
+        RefreshSnapshot();
     }
 
     private void HandleEngineProgressUpdated(DownloadItem item)
     {
         if (item.Id != _item.Id) return;
-        Dispatcher.InvokeAsync(() => RefreshSnapshot(false));
+        Dispatcher.InvokeAsync(RefreshSnapshot);
     }
 
     private void HandleEngineStatusChanged(DownloadItem item)
     {
         if (item.Id != _item.Id) return;
-        Dispatcher.InvokeAsync(() => RefreshSnapshot(true));
+        Dispatcher.InvokeAsync(RefreshSnapshot);
     }
 
-    private void RefreshSnapshot(bool forceLogs)
+    private void RefreshSnapshot()
     {
         // Always take DB as the baseline because extension downloads are driven by NativeHost.
         var dbSnapshot = _repository.GetById(_item.Id);
@@ -257,11 +254,6 @@ public partial class DownloadDetailsWindow : Window, INotifyPropertyChanged
         UpdateSpeedLimitStatus();
         UpdateSegments();
         TryAutoCloseOnCompletion();
-
-        if (forceLogs)
-        {
-            UpdateLogs();
-        }
     }
 
     private void TryAutoCloseOnCompletion()
@@ -363,21 +355,6 @@ public partial class DownloadDetailsWindow : Window, INotifyPropertyChanged
             {
                 SegmentRows.RemoveAt(i);
             }
-        }
-    }
-
-    private void UpdateLogs()
-    {
-        _lastLogRefresh = DateTime.UtcNow;
-        var logs = _repository.GetLogs(_item.Id, 60)
-            .OrderBy(log => log.Id)
-            .Select(log => $"[{log.Timestamp.ToLocalTime():HH:mm:ss}] [{log.Level}] {log.Message}")
-            .ToList();
-
-        LogEntries.Clear();
-        foreach (var line in logs)
-        {
-            LogEntries.Add(line);
         }
     }
 
