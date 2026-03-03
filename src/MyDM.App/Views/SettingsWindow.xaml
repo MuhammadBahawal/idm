@@ -105,15 +105,22 @@
                     <StackPanel Margin="14">
                         <TextBlock Text="Browser Extension Integration" FontWeight="SemiBold" FontSize="15"
                                    Foreground="{StaticResource TextBrush}" Margin="0,0,0,8"/>
-                        <TextBlock Text="MyDM extension connects to the native host via browser native messaging."
+                        <TextBlock Text="Register native host for Chrome, Edge, Brave, Vivaldi, Opera and Firefox."
                                    TextWrapping="Wrap" Foreground="{StaticResource TextMutedBrush}" Margin="0,0,0,12"/>
 
-                        <TextBlock Text="Extension ID" Style="{StaticResource MetaLabelText}"/>
-                        <TextBox x:Name="ExtensionIdTextBox" Width="360" HorizontalAlignment="Left" Margin="0,4,0,8"/>
+                        <TextBlock Text="Chromium Extension ID(s)" Style="{StaticResource MetaLabelText}"/>
+                        <TextBox x:Name="ChromiumExtensionIdsTextBox" Width="540" HorizontalAlignment="Left" Margin="0,4,0,2"/>
+                        <TextBlock Text="Comma separated IDs. Example: abc..., def..."
+                                   Foreground="{StaticResource TextMutedBrush}" FontSize="11" Margin="0,0,0,10"/>
+
+                        <TextBlock Text="Firefox Add-on ID(s)" Style="{StaticResource MetaLabelText}"/>
+                        <TextBox x:Name="FirefoxExtensionIdsTextBox" Width="540" HorizontalAlignment="Left" Margin="0,4,0,2"/>
+                        <TextBlock Text="Example: mydm@mydm.app"
+                                   Foreground="{StaticResource TextMutedBrush}" FontSize="11" Margin="0,0,0,10"/>
 
                         <TextBlock x:Name="NativeHostStatus" Text="Native Host: Not registered" Margin="0,0,0,8"
                                    Foreground="{StaticResource TextMutedBrush}"/>
-                        <Button Content="Register Native Host" Style="{StaticResource PrimaryButton}"
+                        <Button Content="Register Native Host (All Browsers)" Style="{StaticResource PrimaryButton}"
                                 HorizontalAlignment="Left" Click="RegisterNativeHost_Click"/>
                     </StackPanel>
                 </TabItem>

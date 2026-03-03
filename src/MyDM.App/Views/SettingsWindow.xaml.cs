@@ -10,7 +10,8 @@ namespace MyDM.App.Views;
 
 public partial class SettingsWindow : Window
 {
-    private const string DefaultExtensionId = "gnpallpkcdihlckdkddppkhgblokapdj";
+    private const string DefaultChromiumExtensionIds = "gnpallpkcdihlckdkddppkhgblokapdj";
+    private const string DefaultFirefoxExtensionIds = "mydm@mydm.app";
     private readonly DownloadRepository _repository;
     private readonly DownloadEngine _engine;
 
@@ -32,7 +33,14 @@ public partial class SettingsWindow : Window
         FfmpegPathTextBox.Text = _repository.GetSetting("FfmpegPath") ?? "";
         TimeoutTextBox.Text = _repository.GetSetting("ConnectionTimeout") ?? "30";
         MaxRetriesTextBox.Text = _repository.GetSetting("MaxRetries") ?? "10";
-        ExtensionIdTextBox.Text = _repository.GetSetting("ExtensionId") ?? DefaultExtensionId;
+        var chromiumIds = _repository.GetSetting("ChromiumExtensionIds");
+        if (string.IsNullOrWhiteSpace(chromiumIds))
+        {
+            // Backward compatibility with older builds.
+            chromiumIds = _repository.GetSetting("ExtensionId");
+        }
+        ChromiumExtensionIdsTextBox.Text = chromiumIds ?? DefaultChromiumExtensionIds;
+        FirefoxExtensionIdsTextBox.Text = _repository.GetSetting("FirefoxExtensionIds") ?? DefaultFirefoxExtensionIds;
         QueueScheduleStartTextBox.Text = _repository.GetSetting("QueueScheduleStart") ?? "09:00";
         QueueScheduleStopTextBox.Text = _repository.GetSetting("QueueScheduleStop") ?? "18:00";
         QueueScheduleDaysTextBox.Text = _repository.GetSetting("QueueScheduleDays") ?? "Mon,Tue,Wed,Thu,Fri";
@@ -130,41 +138,32 @@ public partial class SettingsWindow : Window
                 return;
             }
 
-            var manifestPath = Path.Combine(AppContext.BaseDirectory, "com.mydm.native.json");
-            var extensionId = (ExtensionIdTextBox.Text ?? string.Empty).Trim();
-            if (string.IsNullOrWhiteSpace(extensionId))
+            var chromiumIds = NativeHostRegistrationService.ParseChromiumExtensionIds(ChromiumExtensionIdsTextBox.Text);
+            var firefoxIds = NativeHostRegistrationService.ParseFirefoxExtensionIds(FirefoxExtensionIdsTextBox.Text);
+            if (chromiumIds.Count == 0)
             {
-                extensionId = DefaultExtensionId;
+                NativeHostStatus.Text = "ERROR: Enter at least one valid Chromium extension ID.";
+                return;
             }
-            _repository.SetSetting("ExtensionId", extensionId);
-
-            var manifest = $$"""
+            if (firefoxIds.Count == 0)
             {
-                "name": "com.mydm.native",
-                "description": "MyDM Native Messaging Host",
-                "path": "{{hostPath.Replace("\\", "\\\\")}}",
-                "type": "stdio",
-                "allowed_origins": [
-                    "chrome-extension://{{extensionId}}/"
-                ]
-            }
-            """;
-
-            File.WriteAllText(manifestPath, manifest);
-
-            var registryPaths = new[]
-            {
-                @"SOFTWARE\Google\Chrome\NativeMessagingHosts\com.mydm.native",
-                @"SOFTWARE\Microsoft\Edge\NativeMessagingHosts\com.mydm.native"
-            };
-
-            foreach (var regPath in registryPaths)
-            {
-                using var key = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(regPath);
-                key?.SetValue(string.Empty, manifestPath);
+                NativeHostStatus.Text = "ERROR: Enter at least one valid Firefox add-on ID.";
+                return;
             }
 
-            NativeHostStatus.Text = $"OK: Native Host registered for extension {extensionId}";
+            var result = NativeHostRegistrationService.Register(
+                hostPath,
+                AppContext.BaseDirectory,
+                chromiumIds,
+                firefoxIds);
+
+            ChromiumExtensionIdsTextBox.Text = string.Join(", ", result.ChromiumExtensionIds);
+            FirefoxExtensionIdsTextBox.Text = string.Join(", ", result.FirefoxExtensionIds);
+            _repository.SetSetting("ChromiumExtensionIds", string.Join(",", result.ChromiumExtensionIds));
+            _repository.SetSetting("FirefoxExtensionIds", string.Join(",", result.FirefoxExtensionIds));
+            _repository.SetSetting("ExtensionId", result.ChromiumExtensionIds[0]); // legacy setting key
+
+            NativeHostStatus.Text = $"OK: Registered ({result.ChromiumRegistryKeysWritten} Chromium keys + Firefox).";
         }
         catch (Exception ex)
         {
@@ -179,7 +178,11 @@ public partial class SettingsWindow : Window
         _repository.SetSetting("FfmpegPath", FfmpegPathTextBox.Text);
         _repository.SetSetting("ConnectionTimeout", TimeoutTextBox.Text);
         _repository.SetSetting("MaxRetries", MaxRetriesTextBox.Text);
-        _repository.SetSetting("ExtensionId", ExtensionIdTextBox.Text.Trim());
+        var chromiumIds = NativeHostRegistrationService.ParseChromiumExtensionIds(ChromiumExtensionIdsTextBox.Text);
+        var firefoxIds = NativeHostRegistrationService.ParseFirefoxExtensionIds(FirefoxExtensionIdsTextBox.Text);
+        _repository.SetSetting("ChromiumExtensionIds", chromiumIds.Count > 0 ? string.Join(",", chromiumIds) : DefaultChromiumExtensionIds);
+        _repository.SetSetting("FirefoxExtensionIds", firefoxIds.Count > 0 ? string.Join(",", firefoxIds) : DefaultFirefoxExtensionIds);
+        _repository.SetSetting("ExtensionId", chromiumIds.Count > 0 ? chromiumIds[0] : DefaultChromiumExtensionIds);
         _repository.SetSetting("MaxConcurrentDownloads", GetComboValue(MaxConcurrentCombo, "3"));
         _repository.SetSetting("DefaultConnections", GetComboValue(DefaultConnectionsCombo, "8"));
         _repository.SetSetting("AutoShowDownloadWindow", AutoPopupCheckBox.IsChecked == true ? "1" : "0");
@@ -206,6 +209,8 @@ public partial class SettingsWindow : Window
         var candidates = new[]
         {
             Path.Combine(AppContext.BaseDirectory, "MyDM.NativeHost.exe"),
+            Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "MyDM.NativeHost", "bin", "Release", "net8.0", "win-x64", "publish", "MyDM.NativeHost.exe")),
+            Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "MyDM.NativeHost", "bin", "Release", "net8.0", "win-x64", "publish", "MyDM.NativeHost.exe")),
             Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "MyDM.NativeHost", "bin", "Debug", "net8.0", "MyDM.NativeHost.exe")),
             Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "MyDM.NativeHost", "bin", "Debug", "net8.0", "MyDM.NativeHost.exe"))
         };

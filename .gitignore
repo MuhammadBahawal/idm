@@ -1,0 +1,19 @@
+# Build outputs
+**/bin/
+**/obj/
+
+# Release artifacts
+artifacts/
+
+# Extension build artifacts
+extension/dist/
+extension/dist-pack/
+
+# Node modules
+extension/node_modules/
+
+# Local browser profiles and temp dirs
+.pw-profile-*/
+
+# Logs
+*.log

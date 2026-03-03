@@ -28,6 +28,20 @@ internal static class Program
     private static string _logPath = string.Empty;
     private static string _ytDebugLogPath = string.Empty;
     private const int YtDlpTimeoutMs = 30 * 60 * 1000;
+    private const string RedactedValue = "***REDACTED***";
+    private static readonly string[] SensitiveKeyMarkers =
+    {
+        "cookie",
+        "authorization",
+        "token",
+        "signature",
+        "sig",
+        "apikey",
+        "api_key",
+        "secret",
+        "password",
+        "passwd"
+    };
 
     static async Task Main(string[] args)
     {
@@ -2333,19 +2347,135 @@ internal static class Program
     {
         var quotedArgs = args.Select(arg =>
         {
-            if (string.IsNullOrEmpty(arg))
+            var safeArg = SanitizeStringForLog(arg, keyHint: "commandArg");
+            if (string.IsNullOrEmpty(safeArg))
             {
                 return "\"\"";
             }
 
-            if (arg.Contains(' ') || arg.Contains('"'))
+            if (safeArg.Contains(' ') || safeArg.Contains('"'))
             {
-                return $"\"{arg.Replace("\"", "\\\"")}\"";
+                return $"\"{safeArg.Replace("\"", "\\\"")}\"";
             }
 
-            return arg;
+            return safeArg;
         });
         return $"{fileName} {string.Join(" ", quotedArgs)}";
+    }
+
+    private static object? SanitizeForLog(object? data, string? keyHint = null)
+    {
+        if (data == null)
+        {
+            return null;
+        }
+
+        if (data is JsonElement element)
+        {
+            return SanitizeJsonElement(element, keyHint);
+        }
+
+        try
+        {
+            var serialized = JsonSerializer.SerializeToElement(data);
+            return SanitizeJsonElement(serialized, keyHint);
+        }
+        catch
+        {
+            return SanitizeStringForLog(data.ToString() ?? string.Empty, keyHint);
+        }
+    }
+
+    private static object? SanitizeJsonElement(JsonElement element, string? keyHint = null)
+    {
+        return element.ValueKind switch
+        {
+            JsonValueKind.Object => element
+                .EnumerateObject()
+                .ToDictionary(
+                    prop => prop.Name,
+                    prop => SanitizeJsonElement(prop.Value, prop.Name)),
+            JsonValueKind.Array => element
+                .EnumerateArray()
+                .Select(item => SanitizeJsonElement(item, keyHint))
+                .ToList(),
+            JsonValueKind.String => SanitizeStringForLog(element.GetString() ?? string.Empty, keyHint),
+            JsonValueKind.Number => element.TryGetInt64(out var longValue)
+                ? longValue
+                : element.TryGetDouble(out var doubleValue) ? doubleValue : element.GetRawText(),
+            JsonValueKind.True => true,
+            JsonValueKind.False => false,
+            JsonValueKind.Null => null,
+            JsonValueKind.Undefined => null,
+            _ => SanitizeStringForLog(element.GetRawText(), keyHint)
+        };
+    }
+
+    private static string SanitizeStringForLog(string value, string? keyHint = null)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return value;
+        }
+
+        if (IsSensitiveKey(keyHint))
+        {
+            return RedactedValue;
+        }
+
+        var trimmed = value.Trim();
+        if (Uri.TryCreate(trimmed, UriKind.Absolute, out var absoluteUri))
+        {
+            return SanitizeUri(absoluteUri);
+        }
+
+        // ytdlp --add-header values are logged as plain strings in command args.
+        if (trimmed.StartsWith("Cookie:", StringComparison.OrdinalIgnoreCase) ||
+            trimmed.StartsWith("Authorization:", StringComparison.OrdinalIgnoreCase))
+        {
+            return RedactedValue;
+        }
+
+        return value.Length > 1000
+            ? value[..1000] + "...(truncated)"
+            : value;
+    }
+
+    private static string SanitizeUri(Uri uri)
+    {
+        var builder = new UriBuilder(uri);
+        if (!string.IsNullOrEmpty(builder.Query))
+        {
+            var query = builder.Query.TrimStart('?');
+            var parts = query.Split('&', StringSplitOptions.RemoveEmptyEntries);
+            for (var i = 0; i < parts.Length; i++)
+            {
+                var equalsIndex = parts[i].IndexOf('=');
+                if (equalsIndex <= 0)
+                {
+                    continue;
+                }
+
+                var key = parts[i][..equalsIndex];
+                if (IsSensitiveKey(Uri.UnescapeDataString(key)))
+                {
+                    parts[i] = $"{key}={RedactedValue}";
+                }
+            }
+            builder.Query = string.Join("&", parts);
+        }
+
+        return builder.Uri.ToString();
+    }
+
+    private static bool IsSensitiveKey(string? key)
+    {
+        if (string.IsNullOrWhiteSpace(key))
+        {
+            return false;
+        }
+
+        return SensitiveKeyMarkers.Any(marker => key.Contains(marker, StringComparison.OrdinalIgnoreCase));
     }
 
     private static string Tail(string value, int maxLength)
@@ -2609,7 +2739,7 @@ internal static class Program
             ["level"] = level,
             ["event"] = eventName,
             ["requestId"] = requestId,
-            ["data"] = data
+            ["data"] = SanitizeForLog(data)
         };
 
         var line = JsonSerializer.Serialize(entry);
@@ -2637,7 +2767,7 @@ internal static class Program
             ["ts"] = DateTime.UtcNow.ToString("O"),
             ["event"] = eventName,
             ["requestId"] = requestId,
-            ["data"] = data
+            ["data"] = SanitizeForLog(data)
         };
 
         var line = JsonSerializer.Serialize(entry);

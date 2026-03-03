@@ -4,6 +4,10 @@
     "private": true,
     "scripts": {
         "build": "node build.js",
+        "build:all": "npm run build && npm run package",
+        "package": "node package.js --browser=all",
+        "package:chromium": "node package.js --browser=chromium",
+        "package:firefox": "node package.js --browser=firefox",
         "watch": "node build.js --watch",
         "test": "echo \"No tests configured yet\" && exit 0"
     },

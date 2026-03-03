@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("MyDM.App")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+e6a1b9711936d2540ff3274ef85698b621c2e9e9")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+4bee19b8a406fd7d02838c7a3db52ecf51fc5910")]
 [assembly: System.Reflection.AssemblyProductAttribute("MyDM.App")]
 [assembly: System.Reflection.AssemblyTitleAttribute("MyDM.App")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
