@@ -443,7 +443,9 @@ function pickStreamQuality(qualities: StreamQualityOption[]): Promise<StreamQual
         list.className = "mydm-quality-list";
 
         for (const q of qualities) {
-            const qualityLabel = q.quality || (q.height > 0 ? `${q.height}p` : "Auto");
+            const qualityLabel = (q.quality && q.quality !== "0p")
+                ? q.quality
+                : (q.height > 0 ? `${q.height}p` : "Auto");
             const item = document.createElement("button");
             item.className = "mydm-quality-item";
             item.innerHTML = `
@@ -1277,12 +1279,16 @@ function injectVideoOverlay(video: HTMLVideoElement): void {
                 youtubeRouteError = result.error || "";
             }
 
-            log("warn", "gui.youtube.all_routes_failed_trying_stream_fallback", {
+            log("warn", "gui.youtube.all_routes_failed", {
                 pageUrl: location.href,
                 youtubeUrl,
                 error: youtubeRouteError
             });
-            showNotification("Direct YouTube mode failed, trying stream fallback...");
+            showNotification(
+                `YouTube download failed: ${youtubeRouteError || "Desktop app / native host communication issue."}`,
+                true
+            );
+            return;
         }
 
         log("info", "download_button_clicked", {

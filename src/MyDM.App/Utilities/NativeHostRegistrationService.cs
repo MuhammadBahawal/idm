@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using System.Diagnostics;
 using Microsoft.Win32;
 
 namespace MyDM.App.Utilities;
@@ -52,6 +53,7 @@ public static class NativeHostRegistrationService
         {
             throw new FileNotFoundException("MyDM.NativeHost.exe not found.", hostExecutablePath);
         }
+        EnsureNativeHostBoots(hostExecutablePath);
 
         var chromiumIds = chromiumExtensionIds
             .Where(id => !string.IsNullOrWhiteSpace(id))
@@ -126,6 +128,45 @@ public static class NativeHostRegistrationService
             FirefoxRegistryWritten: firefoxWritten,
             ChromiumExtensionIds: chromiumIds,
             FirefoxExtensionIds: firefoxIds);
+    }
+
+    private static void EnsureNativeHostBoots(string hostExecutablePath)
+    {
+        var psi = new ProcessStartInfo
+        {
+            FileName = hostExecutablePath,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true
+        };
+        psi.ArgumentList.Add("--self-test");
+
+        using var process = Process.Start(psi)
+            ?? throw new InvalidOperationException("Failed to start MyDM.NativeHost.exe.");
+
+        if (!process.WaitForExit(10_000))
+        {
+            try
+            {
+                process.Kill(entireProcessTree: true);
+            }
+            catch
+            {
+                // ignored
+            }
+
+            throw new InvalidOperationException("MyDM.NativeHost self-test timed out.");
+        }
+
+        var stderr = process.StandardError.ReadToEnd().Trim();
+        if (process.ExitCode != 0)
+        {
+            throw new InvalidOperationException(
+                string.IsNullOrWhiteSpace(stderr)
+                    ? $"MyDM.NativeHost self-test failed (ExitCode={process.ExitCode})."
+                    : $"MyDM.NativeHost self-test failed (ExitCode={process.ExitCode}): {stderr}");
+        }
     }
 
     private static IReadOnlyList<string> ParseIds(

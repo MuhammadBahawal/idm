@@ -1402,6 +1402,15 @@ chrome.runtime.onMessage.addListener((message: ExtMessage, sender, sendResponse)
                     const pageUrl = message.pageUrl || sender.tab?.url || "";
                     const allCandidates = tabStreamCandidates.get(tabId) || [];
                     const candidates = filterCandidatesForPage(allCandidates, pageUrl);
+                    const isYouTubePageRequest = (() => {
+                        if (!pageUrl) return false;
+                        try {
+                            const host = new URL(pageUrl).hostname.toLowerCase();
+                            return host.includes("youtube.com") || host === "youtu.be" || host === "m.youtube.com";
+                        } catch {
+                            return false;
+                        }
+                    })();
 
                     // Build list of unique video qualities + audio
                     const seenQualities = new Set<string>();
@@ -1425,21 +1434,35 @@ chrome.runtime.onMessage.addListener((message: ExtMessage, sender, sendResponse)
 
                     for (const c of sorted) {
                         if (!c.hasVideo) continue; // skip audio-only for the main list
+                        if (isYouTubePageRequest && c.height <= 0 && !c.qualityLabel && !c.itag) {
+                            // Unknown/unstable YouTube stream entry (often becomes "0p" in UI).
+                            continue;
+                        }
                         const key = `${c.qualityLabel || c.height}-${c.muxed ? "m" : "s"}`;
                         if (seenQualities.has(key)) continue;
-                        seenQualities.add(key);
 
                         let audioUrl = "";
                         if (!c.muxed) {
                             const audio = resolveBestAudioCandidate(tabId, pageUrl);
-                            if (audio) audioUrl = audio.url;
+                            if (audio) {
+                                audioUrl = audio.url;
+                            } else if (isYouTubePageRequest) {
+                                // Avoid presenting video-only rows in YouTube picker when no audio pair is available.
+                                continue;
+                            }
                         }
+
+                        seenQualities.add(key);
+                        const safeQuality =
+                            (c.qualityLabel && c.qualityLabel !== "0p")
+                                ? c.qualityLabel
+                                : (c.height > 0 ? `${c.height}p` : "Auto");
 
                         qualities.push({
                             url: c.url,
                             audioUrl,
                             itag: c.itag,
-                            quality: c.qualityLabel || `${c.height}p`,
+                            quality: safeQuality,
                             mimeType: c.mimeType || "",
                             muxed: c.muxed,
                             height: c.height,
