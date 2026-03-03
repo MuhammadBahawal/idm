@@ -128,9 +128,20 @@ Invoke-Step -Name "Publish native host" -Action {
         --self-contained true `
         -p:PublishSingleFile=true `
         -p:PublishReadyToRun=true `
+        -p:IncludeNativeLibrariesForSelfExtract=true `
         -p:DebugType=None `
         -p:DebugSymbols=false `
         -o $hostPublish
+
+    $hostExe = Join-Path $hostPublish "MyDM.NativeHost.exe"
+    if (-not (Test-Path $hostExe)) {
+        throw "Published native host not found at: $hostExe"
+    }
+
+    & $hostExe --self-test | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "Published native host failed startup self-test. ExitCode=$LASTEXITCODE"
+    }
 }
 
 Invoke-Step -Name "Assemble app bundle" -Action {

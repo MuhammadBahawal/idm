@@ -45,6 +45,7 @@ internal static class Program
 
     static async Task Main(string[] args)
     {
+        var isSelfTest = args.Any(arg => string.Equals(arg, "--self-test", StringComparison.OrdinalIgnoreCase));
         var appDataDir = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "MyDM");
@@ -70,7 +71,18 @@ internal static class Program
                 progress = Math.Round(item.ProgressPercent, 1)
             });
 
-            await LogAsync("info", "host.start", null, new { pid = Environment.ProcessId });
+            await LogAsync("info", "host.start", null, new
+            {
+                pid = Environment.ProcessId,
+                selfTest = isSelfTest
+            });
+
+            // Used by release pipeline to validate the published native host boots correctly.
+            if (isSelfTest)
+            {
+                await LogAsync("info", "host.selftest.ok");
+                return;
+            }
 
             // Read messages from stdin
             var stdin = Console.OpenStandardInput();
