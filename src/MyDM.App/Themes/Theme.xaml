@@ -119,11 +119,11 @@
             <Trigger Property="IsMouseOver" Value="True">
                 <Setter Property="Background" Value="{StaticResource PrimaryDarkBrush}"/>
                 <Setter Property="BorderBrush" Value="#234EAA"/>
-                <Setter Property="Foreground" Value="#FFFFFF"/>
+                <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
             </Trigger>
             <Trigger Property="IsPressed" Value="True">
                 <Setter Property="Background" Value="#224FAD"/>
-                <Setter Property="Foreground" Value="#FFFFFF"/>
+                <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
             </Trigger>
         </Style.Triggers>
     </Style>
