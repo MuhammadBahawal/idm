@@ -8,17 +8,16 @@ Modern Windows download manager with browser integration.
 
 ## Quick Download
 
-Download these files from the latest release:
+Download these files directly from this repo (`main` branch):
 
 | File | Direct Link | Use |
 | --- | --- | --- |
-| Latest release page | [Open Releases](https://github.com/MuhammadBahawal/idm/releases/latest) | Always works |
-| `MyDMUserSetup-x64.exe` | [Download Setup EXE](https://github.com/MuhammadBahawal/idm/releases/latest/download/MyDMUserSetup-x64.exe) | Main installer |
-| `mydm-extension-chromium.zip` | [Download Chromium Extension](https://github.com/MuhammadBahawal/idm/releases/latest/download/mydm-extension-chromium.zip) | Chrome, Edge, Brave, Opera, Vivaldi |
-| `mydm-extension-firefox.zip` | [Download Firefox Extension](https://github.com/MuhammadBahawal/idm/releases/latest/download/mydm-extension-firefox.zip) | Firefox |
+| `MyDMUserSetup-x64.exe` | [Download Setup EXE](https://raw.githubusercontent.com/MuhammadBahawal/idm/main/downloads/MyDMUserSetup-x64.exe) | Main installer |
+| `mydm-extension-chromium.zip` | [Download Chromium Extension](https://raw.githubusercontent.com/MuhammadBahawal/idm/main/downloads/mydm-extension-chromium.zip) | Chrome, Edge, Brave, Opera, Vivaldi |
+| `mydm-extension-firefox.zip` | [Download Firefox Extension](https://raw.githubusercontent.com/MuhammadBahawal/idm/main/downloads/mydm-extension-firefox.zip) | Firefox |
 
-If a direct link shows `404 Not Found`, open the Releases page and upload/publish a release first.
-As of **March 3, 2026**, this repo has no published GitHub releases yet, so direct `/latest/download/...` links return 404.
+Optional: release page is here if you also publish releases:
+[Open Releases](https://github.com/MuhammadBahawal/idm/releases)
 
 ## Install (User Flow)
 
