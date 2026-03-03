@@ -2,8 +2,8 @@
 
 Modern Windows download manager with browser integration.
 
-[![Latest Release](https://img.shields.io/github/v/release/muhammadbahawal/idm?label=Latest%20Release)](https://github.com/muhammadbahawal/idm/releases/latest)
-[![Platform](https://img.shields.io/badge/Platform-Windows%20x64-blue)](https://github.com/muhammadbahawal/idm/releases/latest)
+[![Latest Release](https://img.shields.io/github/v/release/MuhammadBahawal/idm?label=Latest%20Release)](https://github.com/MuhammadBahawal/idm/releases/latest)
+[![Platform](https://img.shields.io/badge/Platform-Windows%20x64-blue)](https://github.com/MuhammadBahawal/idm/releases/latest)
 [![License](https://img.shields.io/badge/License-MIT-green)](https://opensource.org/license/mit)
 
 ## Quick Download
@@ -12,9 +12,13 @@ Download these files from the latest release:
 
 | File | Direct Link | Use |
 | --- | --- | --- |
-| `MyDMUserSetup-x64.exe` | [Download Setup EXE](https://github.com/muhammadbahawal/idm/releases/latest/download/MyDMUserSetup-x64.exe) | Main installer |
-| `mydm-extension-chromium.zip` | [Download Chromium Extension](https://github.com/muhammadbahawal/idm/releases/latest/download/mydm-extension-chromium.zip) | Chrome, Edge, Brave, Opera, Vivaldi |
-| `mydm-extension-firefox.zip` | [Download Firefox Extension](https://github.com/muhammadbahawal/idm/releases/latest/download/mydm-extension-firefox.zip) | Firefox |
+| Latest release page | [Open Releases](https://github.com/MuhammadBahawal/idm/releases/latest) | Always works |
+| `MyDMUserSetup-x64.exe` | [Download Setup EXE](https://github.com/MuhammadBahawal/idm/releases/latest/download/MyDMUserSetup-x64.exe) | Main installer |
+| `mydm-extension-chromium.zip` | [Download Chromium Extension](https://github.com/MuhammadBahawal/idm/releases/latest/download/mydm-extension-chromium.zip) | Chrome, Edge, Brave, Opera, Vivaldi |
+| `mydm-extension-firefox.zip` | [Download Firefox Extension](https://github.com/MuhammadBahawal/idm/releases/latest/download/mydm-extension-firefox.zip) | Firefox |
+
+If a direct link shows `404 Not Found`, open the Releases page and upload/publish a release first.
+As of **March 3, 2026**, this repo has no published GitHub releases yet, so direct `/latest/download/...` links return 404.
 
 ## Install (User Flow)
 
@@ -82,6 +86,16 @@ Release output:
 - `artifacts/release/<version>/extensions/mydm-extension-firefox.zip`
 
 Publish these exact file names in GitHub Release so direct links keep working.
+
+### Publish Release in GitHub UI
+1. Open `https://github.com/MuhammadBahawal/idm/releases`.
+2. Click `Draft a new release`.
+3. Create tag (example: `v1.0.0-launch`) and publish title.
+4. Upload these assets:
+   - `MyDMUserSetup-x64.exe`
+   - `mydm-extension-chromium.zip`
+   - `mydm-extension-firefox.zip`
+5. Click `Publish release`.
 
 ## Security Notes
 
