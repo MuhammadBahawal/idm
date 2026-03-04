@@ -109,14 +109,35 @@ public class DownloadRepository
                 TransferRate=@tr,
                 TimeLeftSeconds=@tls,
                 LastAttemptAt=@la
-            WHERE Id=@id";
+            WHERE Id=@id
+              AND Status NOT IN (@paused,@cancelled)";
         cmd.Parameters.AddWithValue("@ds", downloadedSize);
         cmd.Parameters.AddWithValue("@st", (int)status);
         cmd.Parameters.AddWithValue("@tr", Math.Max(0, transferRate));
         cmd.Parameters.AddWithValue("@tls", (object?)timeLeft?.TotalSeconds ?? DBNull.Value);
         cmd.Parameters.AddWithValue("@la", DateTime.UtcNow.ToString("o"));
         cmd.Parameters.AddWithValue("@id", id);
+        cmd.Parameters.AddWithValue("@paused", (int)DownloadStatus.Paused);
+        cmd.Parameters.AddWithValue("@cancelled", (int)DownloadStatus.Cancelled);
         cmd.ExecuteNonQuery();
+    }
+
+    public DownloadStatus? GetStatus(string id)
+    {
+        var conn = _db.GetConnection();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT Status FROM Downloads WHERE Id=@id";
+        cmd.Parameters.AddWithValue("@id", id);
+        var scalar = cmd.ExecuteScalar();
+        if (scalar == null || scalar == DBNull.Value)
+        {
+            return null;
+        }
+
+        var value = Convert.ToInt32(scalar);
+        return Enum.IsDefined(typeof(DownloadStatus), value)
+            ? (DownloadStatus)value
+            : null;
     }
 
     // ──── Segments ────

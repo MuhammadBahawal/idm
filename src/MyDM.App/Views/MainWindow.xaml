@@ -54,9 +54,11 @@
                             <Trigger Property="IsMouseOver" Value="True">
                                 <Setter TargetName="ButtonRoot" Property="Background" Value="#EDF4FF"/>
                                 <Setter TargetName="ButtonRoot" Property="BorderBrush" Value="#BFD4F5"/>
+                                <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
                             </Trigger>
                             <Trigger Property="IsPressed" Value="True">
                                 <Setter TargetName="ButtonRoot" Property="Background" Value="#E0ECFD"/>
+                                <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
                             </Trigger>
                             <Trigger Property="IsEnabled" Value="False">
                                 <Setter Property="Opacity" Value="0.45"/>

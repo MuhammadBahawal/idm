@@ -806,6 +806,7 @@ internal static class Program
             ProcessExecutionResult? lastResult = null;
             string? runnerUsed = null;
             string? modeUsed = null;
+            DownloadStatus? externalStopStatus = null;
 
             foreach (var attempt in attempts)
             {
@@ -873,7 +874,22 @@ internal static class Program
                         }
 
                         ApplyYtDlpProgressLine(trackedDownload, progressState, line, isError);
+                    },
+                    externalControlStatusProvider: () =>
+                    {
+                        if (trackedDownload == null)
+                        {
+                            return null;
+                        }
+
+                        return GetTrackedExternalStopStatus(trackedDownload.Id);
                     });
+                if (result.ExternalStopStatus.HasValue)
+                {
+                    externalStopStatus = result.ExternalStopStatus;
+                    lastResult = result;
+                    break;
+                }
                 if (!result.Started)
                 {
                     await LogAsync("warn", "youtube.runner.unavailable", requestId, new
@@ -936,6 +952,24 @@ internal static class Program
                     output = Tail(result.CombinedOutput, 3000)
                 });
                 lastResult = result;
+            }
+
+            if (externalStopStatus.HasValue)
+            {
+                MarkTrackedYtDlpStopped(trackedDownload, externalStopStatus.Value);
+                var (stopMessage, code) = externalStopStatus.Value == DownloadStatus.Cancelled
+                    ? ("Download cancelled by user.", "YTDLP_DOWNLOAD_CANCELLED")
+                    : ("Download paused by user.", "YTDLP_DOWNLOAD_PAUSED");
+
+                return AddRequestId(new NativeMessage
+                {
+                    Type = "error",
+                    Payload = new Dictionary<string, object>
+                    {
+                        { "message", stopMessage },
+                        { "code", code }
+                    }
+                }, requestId);
             }
 
             if (lastResult == null || (!lastResult.Value.Started && string.IsNullOrWhiteSpace(runnerUsed)))
@@ -1365,6 +1399,7 @@ internal static class Program
             var lastResult = default(ProcessExecutionResult);
             var hasResult = false;
             string? runnerUsed = null;
+            DownloadStatus? externalStopStatus = null;
 
             foreach (var runner in runnerSpecs)
             {
@@ -1409,14 +1444,46 @@ internal static class Program
                         }
 
                         ApplyYtDlpProgressLine(trackedDownload, progressState, line, isError);
+                    },
+                    externalControlStatusProvider: () =>
+                    {
+                        if (trackedDownload == null)
+                        {
+                            return null;
+                        }
+
+                        return GetTrackedExternalStopStatus(trackedDownload.Id);
                     });
                 hasResult = true;
+                if (lastResult.ExternalStopStatus.HasValue)
+                {
+                    externalStopStatus = lastResult.ExternalStopStatus;
+                    break;
+                }
 
                 if (lastResult.Started && lastResult.ExitCode == 0)
                 {
                     runnerUsed = runner.DisplayName;
                     break;
                 }
+            }
+
+            if (externalStopStatus.HasValue)
+            {
+                MarkTrackedYtDlpStopped(trackedDownload, externalStopStatus.Value);
+                var (stopMessage, code) = externalStopStatus.Value == DownloadStatus.Cancelled
+                    ? ("Download cancelled by user.", "DOWNLOAD_FORMAT_CANCELLED")
+                    : ("Download paused by user.", "DOWNLOAD_FORMAT_PAUSED");
+
+                return AddRequestId(new NativeMessage
+                {
+                    Type = "error",
+                    Payload = new Dictionary<string, object>
+                    {
+                        { "message", stopMessage },
+                        { "code", code }
+                    }
+                }, requestId);
             }
 
             if (!hasResult || !lastResult.Started || lastResult.ExitCode != 0)
@@ -2056,6 +2123,14 @@ internal static class Program
         public long LastKnownTotalBytes { get; set; }
     }
 
+    private static DownloadStatus? GetTrackedExternalStopStatus(string downloadId)
+    {
+        var status = _repository?.GetStatus(downloadId);
+        return status is DownloadStatus.Paused or DownloadStatus.Cancelled
+            ? status
+            : null;
+    }
+
     private static DownloadItem CreateTrackedYtDlpDownload(
         string sourceUrl,
         string saveDir,
@@ -2089,6 +2164,15 @@ internal static class Program
 
         lock (state.SyncRoot)
         {
+            var externalStop = GetTrackedExternalStopStatus(item.Id);
+            if (externalStop.HasValue)
+            {
+                item.Status = externalStop.Value;
+                item.TransferRate = 0;
+                item.TimeLeft = null;
+                return;
+            }
+
             line = NormalizeYtDlpLine(line);
             if (string.IsNullOrWhiteSpace(line))
             {
@@ -2235,6 +2319,23 @@ internal static class Program
         _repository.Update(item);
     }
 
+    private static void MarkTrackedYtDlpStopped(DownloadItem? item, DownloadStatus status)
+    {
+        if (item == null || _repository == null)
+        {
+            return;
+        }
+
+        item.Status = status;
+        item.TransferRate = 0;
+        item.TimeLeft = null;
+        item.LastAttemptAt = DateTime.UtcNow;
+        item.ErrorMessage = status == DownloadStatus.Cancelled
+            ? "Cancelled by user."
+            : null;
+        _repository.Update(item);
+    }
+
     private static void MarkTrackedYtDlpFailed(DownloadItem? item, string errorMessage)
     {
         if (item == null || _repository == null)
@@ -2281,6 +2382,15 @@ internal static class Program
         if (item.TotalSize > 0 && item.DownloadedSize > item.TotalSize)
         {
             item.DownloadedSize = item.TotalSize;
+        }
+
+        var externalStop = GetTrackedExternalStopStatus(item.Id);
+        if (externalStop.HasValue)
+        {
+            item.Status = externalStop.Value;
+            item.TransferRate = 0;
+            item.TimeLeft = null;
+            return;
         }
 
         _repository.Update(item);
@@ -2507,7 +2617,8 @@ internal static class Program
         string fileName,
         IReadOnlyList<string> args,
         int timeoutMs,
-        Action<string, bool>? onOutputLine = null)
+        Action<string, bool>? onOutputLine = null,
+        Func<DownloadStatus?>? externalControlStatusProvider = null)
     {
         var stdout = new StringBuilder();
         var stderr = new StringBuilder();
@@ -2558,26 +2669,60 @@ internal static class Program
         process.BeginOutputReadLine();
         process.BeginErrorReadLine();
 
-        using var timeoutCts = new CancellationTokenSource(timeoutMs);
-        try
+        var deadlineUtc = DateTime.UtcNow.AddMilliseconds(timeoutMs);
+        while (!process.HasExited)
         {
-            await process.WaitForExitAsync(timeoutCts.Token);
-        }
-        catch (OperationCanceledException)
-        {
-            try
+            var externalStopStatus = externalControlStatusProvider?.Invoke();
+            if (externalStopStatus is DownloadStatus.Paused or DownloadStatus.Cancelled)
             {
-                if (!process.HasExited)
+                try
                 {
-                    process.Kill(entireProcessTree: true);
+                    if (!process.HasExited)
+                    {
+                        process.Kill(entireProcessTree: true);
+                    }
                 }
-            }
-            catch
-            {
-                // ignore kill errors
+                catch
+                {
+                    // ignore kill errors
+                }
+
+                return new ProcessExecutionResult(
+                    true,
+                    -1,
+                    stdout.ToString(),
+                    stderr.ToString(),
+                    $"Process stopped by external control: {externalStopStatus}",
+                    externalStopStatus);
             }
 
-            return new ProcessExecutionResult(true, -1, stdout.ToString(), stderr.ToString(), $"Process timed out after {timeoutMs / 1000}s.");
+            if (DateTime.UtcNow >= deadlineUtc)
+            {
+                try
+                {
+                    if (!process.HasExited)
+                    {
+                        process.Kill(entireProcessTree: true);
+                    }
+                }
+                catch
+                {
+                    // ignore kill errors
+                }
+
+                return new ProcessExecutionResult(true, -1, stdout.ToString(), stderr.ToString(), $"Process timed out after {timeoutMs / 1000}s.");
+            }
+
+            await Task.Delay(150);
+        }
+
+        try
+        {
+            await process.WaitForExitAsync();
+        }
+        catch
+        {
+            // Process already exited; ignore wait failures.
         }
 
         return new ProcessExecutionResult(true, process.ExitCode, stdout.ToString(), stderr.ToString(), null);
@@ -2593,7 +2738,8 @@ internal static class Program
         int ExitCode,
         string Stdout,
         string Stderr,
-        string? StartError)
+        string? StartError,
+        DownloadStatus? ExternalStopStatus = null)
     {
         public string CombinedOutput => string.Join(
             Environment.NewLine,

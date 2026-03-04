@@ -13,6 +13,8 @@ namespace MyDM.Core.Engine;
 /// </summary>
 public class DownloadEngine : IDisposable
 {
+    private static readonly TimeSpan ExternalControlPollInterval = TimeSpan.FromMilliseconds(250);
+
     private readonly HttpClient _httpClient;
     private readonly DownloadRepository _repository;
     private readonly SpeedLimiter _speedLimiter;
@@ -146,6 +148,9 @@ public class DownloadEngine : IDisposable
 
         _ = Task.Run(async () =>
         {
+            using var monitorStopCts = new CancellationTokenSource();
+            var monitorTask = MonitorExternalControlAsync(item.Id, cts, monitorStopCts.Token);
+
             try
             {
                 if (item.SupportsRange && item.TotalSize > 0 && item.Connections > 1)
@@ -207,7 +212,12 @@ public class DownloadEngine : IDisposable
             }
             catch (OperationCanceledException)
             {
-                item.Status = DownloadStatus.Paused;
+                var persistedStatus = _repository.GetStatus(item.Id);
+                var finalStatus = persistedStatus == DownloadStatus.Cancelled
+                    ? DownloadStatus.Cancelled
+                    : DownloadStatus.Paused;
+
+                item.Status = finalStatus;
                 item.TransferRate = 0;
                 item.TimeLeft = null;
                 foreach (var seg in item.Segments)
@@ -215,7 +225,7 @@ public class DownloadEngine : IDisposable
                     seg.TransferRate = 0;
                 }
                 _repository.Update(item);
-                Log(downloadId, "Info", "Download paused");
+                Log(downloadId, "Info", finalStatus == DownloadStatus.Cancelled ? "Download cancelled" : "Download paused");
                 OnProgressUpdated?.Invoke(item);
                 OnStatusChanged?.Invoke(item);
                 ResetTelemetry(item.Id);
@@ -252,7 +262,18 @@ public class DownloadEngine : IDisposable
             }
             finally
             {
+                monitorStopCts.Cancel();
+                try
+                {
+                    await monitorTask;
+                }
+                catch (OperationCanceledException)
+                {
+                    // Expected during stop path.
+                }
+
                 _activeDownloads.TryRemove(downloadId, out _);
+                cts.Dispose();
             }
         }, cts.Token);
     }
@@ -265,7 +286,6 @@ public class DownloadEngine : IDisposable
         if (_activeDownloads.TryRemove(downloadId, out var cts))
         {
             cts.Cancel();
-            cts.Dispose();
         }
         var item = GetDownload(downloadId);
         if (item != null)
@@ -399,6 +419,25 @@ public class DownloadEngine : IDisposable
     }
 
     // ──── Private Methods ────
+
+    private async Task MonitorExternalControlAsync(string downloadId, CancellationTokenSource downloadCts, CancellationToken stopToken)
+    {
+        while (!stopToken.IsCancellationRequested && !downloadCts.IsCancellationRequested)
+        {
+            await Task.Delay(ExternalControlPollInterval, stopToken);
+            if (downloadCts.IsCancellationRequested)
+            {
+                return;
+            }
+
+            var status = _repository.GetStatus(downloadId);
+            if (status is DownloadStatus.Paused or DownloadStatus.Cancelled)
+            {
+                downloadCts.Cancel();
+                return;
+            }
+        }
+    }
 
     private async Task DownloadWithSegmentsAsync(DownloadItem item, CancellationToken ct)
     {
